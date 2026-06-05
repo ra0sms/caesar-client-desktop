@@ -25,6 +25,17 @@ This client connects to the **CAESAR Server** — a hardware/software device bas
 
 ---
 
+## Download
+
+Ready-to-use binaries are available on the [Releases page](https://github.com/ra0sms/caesar-client-desktop/releases):
+
+| Platform | File |
+|---|---|
+| Linux x86_64 | `CAESAR_Desktop_vX.X.X_-x86_64.AppImage` |
+| Windows x86_64 | `CAESAR_Desktop_vX.X.X_windows_x86_64.exe` |
+
+---
+
 ## Requirements
 
 ### Linux
