@@ -1,7 +1,17 @@
 # CAESAR Desktop Client
 
-Desktop client for the CAESAR radio communication system.  
+Desktop client for the [CAESAR radio communication system](https://github.com/ra0sms/caesar_project).  
 Transmits and receives audio over UDP using the Opus codec via GStreamer, with PTT (Push-to-Talk) control via network or foot pedal.
+
+![CAESAR Desktop](screenshots/main_window.png)
+
+---
+
+## Server
+
+This client connects to the **CAESAR Server** — a hardware/software device based on a single-board computer that handles audio routing and PTT control.
+
+👉 [github.com/ra0sms/caesar_project](https://github.com/ra0sms/caesar_project)
 
 ---
 
@@ -95,7 +105,7 @@ bash build_appimage.sh
 
 Output: `Releases/CAESAR_Desktop_vX.X.X_-x86_64.AppImage`
 
-Requires `linuxdeploy` in `tools/` directory.
+`linuxdeploy` is downloaded automatically on first build.
 
 ### Windows — EXE
 
@@ -151,7 +161,9 @@ Settings are saved automatically to:
 │   └── server_monitor.py   # Connection status monitor
 ├── gui/
 │   └── main_window.py      # Main application window
-└── tools/
+├── screenshots/
+│   └── main_window.png     # screenshot for README
+└── tools/                  # auto-created on first build (not in git)
     └── linuxdeploy-x86_64.AppImage
 ```
 

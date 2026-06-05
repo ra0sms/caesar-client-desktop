@@ -1,5 +1,11 @@
-import os
 import subprocess
+
+from audio.backend import (
+    find_gst_launch,
+    get_gst_env,
+    get_gst_popen_kwargs,
+    get_gst_src,
+)
 
 
 class AudioTX:
@@ -11,10 +17,9 @@ class AudioTX:
             return
 
         cmd = [
-            "gst-launch-1.0",
+            find_gst_launch(),
             "-q",
-            "pulsesrc",
-            f"device={device}",
+            *get_gst_src(device),
             "!",
             "audioconvert",
             "!",
@@ -34,10 +39,7 @@ class AudioTX:
             "port=5000",
         ]
 
-        env = os.environ.copy()
-        env.pop("LD_LIBRARY_PATH", None)
-
-        self.proc = subprocess.Popen(cmd, env=env)
+        self.proc = subprocess.Popen(cmd, env=get_gst_env(), **get_gst_popen_kwargs())
 
     def stop(self):
         if self.proc:

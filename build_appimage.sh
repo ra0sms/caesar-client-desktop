@@ -25,6 +25,20 @@ rm -f *.spec
 rm -f *.AppImage
 
 echo "=========================================="
+echo " Checking linuxdeploy"
+echo "=========================================="
+
+mkdir -p tools
+
+if [ ! -f tools/linuxdeploy-x86_64.AppImage ]; then
+    echo "Downloading linuxdeploy..."
+    curl -L -o tools/linuxdeploy-x86_64.AppImage \
+        https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+    chmod +x tools/linuxdeploy-x86_64.AppImage
+    echo "Done."
+fi
+
+echo "=========================================="
 echo " Generating version.py"
 echo "=========================================="
 
