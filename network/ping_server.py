@@ -1,7 +1,6 @@
 import socket
 import threading
 
-
 PING_PORT = 5002
 
 MAGIC_REQUEST = b"PING_REQUEST"
@@ -9,7 +8,6 @@ MAGIC_RESPONSE = b"PING_RESPONSE"
 
 
 class PingServer:
-
     def __init__(self):
         self.running = False
         self.thread = None
@@ -21,10 +19,7 @@ class PingServer:
 
         self.running = True
 
-        self.thread = threading.Thread(
-            target=self.worker,
-            daemon=True
-        )
+        self.thread = threading.Thread(target=self.worker, daemon=True)
 
         self.thread.start()
 
@@ -33,25 +28,18 @@ class PingServer:
 
     def worker(self):
 
-        sock = socket.socket(
-            socket.AF_INET,
-            socket.SOCK_DGRAM
-        )
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         sock.bind(("0.0.0.0", PING_PORT))
 
         while self.running:
-
             try:
                 data, addr = sock.recvfrom(1024)
 
                 if data == MAGIC_REQUEST:
-                    sock.sendto(
-                        MAGIC_RESPONSE,
-                        addr
-                    )
+                    sock.sendto(MAGIC_RESPONSE, addr)
 
-            except:
+            except Exception:
                 pass
 
         sock.close()

@@ -24,9 +24,15 @@ rm -rf AppDir
 rm -f *.spec
 rm -f *.AppImage
 
-echo "========================================="
+echo "=========================================="
+echo " Generating version.py"
+echo "=========================================="
+
+echo "VERSION = \"$VERSION\"" > version.py
+
+echo "=========================================="
 echo " Building executable with PyInstaller"
-echo "========================================="
+echo "=========================================="
 
 source venv/bin/activate
 
@@ -98,12 +104,16 @@ echo "========================================="
 
 APPIMAGE_FILE=$(ls *.AppImage | head -n1)
 
-mv "$APPIMAGE_FILE" \
-   "${OUTPUT_NAME}-x86_64.AppImage"
+FINAL_NAME="${OUTPUT_NAME}-x86_64.AppImage"
+
+mv "$APPIMAGE_FILE" "$FINAL_NAME"
+
+mkdir -p Releases
+mv "$FINAL_NAME" "Releases/$FINAL_NAME"
 
 echo
 echo "========================================="
 echo " BUILD COMPLETE"
 echo "========================================="
 
-ls -lh "${OUTPUT_NAME}-x86_64.AppImage"
+ls -lh "Releases/$FINAL_NAME"

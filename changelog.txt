@@ -1,0 +1,21 @@
+CAESAR Desktop - Changelog
+==========================
+
+v1.0.2 (2026-06-05)
+--------------------
+- Fix: AppImage - gst-launch-1.0 now uses system libraries (LD_LIBRARY_PATH cleared)
+- Fix: removed shell=True in AudioRX and AudioTX (security)
+- Add: IP address validation before connecting
+- Add: app version displayed in window title
+- Add: Refresh button for audio devices
+- Add: error message if gst-launch-1.0 is not found
+- Add: build script now auto-generates version.py and moves AppImage to Releases/
+- Refactor: DEFAULT_CONFIG constant in config.py
+- Refactor: ip property in MainWindow
+- Refactor: ServerMonitor socket uses context manager (no leak)
+- Refactor: ServerMonitor.stop() now waits for thread to finish
+- Refactor: replaced bare except with except Exception throughout
+
+v1.0.0 (2026-06-04)
+--------------------
+- Initial release

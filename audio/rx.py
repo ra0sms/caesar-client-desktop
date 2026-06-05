@@ -1,8 +1,8 @@
+import os
 import subprocess
 
 
 class AudioRX:
-
     def __init__(self):
         self.proc = None
 
@@ -10,17 +10,30 @@ class AudioRX:
         if self.proc:
             return
 
-        cmd = f'''
-gst-launch-1.0 -q \
-udpsrc port=5000 caps="application/x-rtp,payload=96" ! \
-rtpjitterbuffer latency=100 ! \
-rtpopusdepay ! opusdec ! audioconvert ! pulsesink device="{device}"
-'''
+        cmd = [
+            "gst-launch-1.0",
+            "-q",
+            "udpsrc",
+            "port=5000",
+            "caps=application/x-rtp,payload=96",
+            "!",
+            "rtpjitterbuffer",
+            "latency=100",
+            "!",
+            "rtpopusdepay",
+            "!",
+            "opusdec",
+            "!",
+            "audioconvert",
+            "!",
+            "pulsesink",
+            f"device={device}",
+        ]
 
-        self.proc = subprocess.Popen(
-            cmd,
-            shell=True
-        )
+        env = os.environ.copy()
+        env.pop("LD_LIBRARY_PATH", None)
+
+        self.proc = subprocess.Popen(cmd, env=env)
 
     def stop(self):
         if self.proc:

@@ -1,14 +1,10 @@
-from PyQt5.QtCore import (
-    QThread,
-    pyqtSignal
-)
+import time
 
 import serial
-import time
+from PyQt5.QtCore import QThread, pyqtSignal
 
 
 class FootswitchThread(QThread):
-
     state_changed = pyqtSignal(bool)
 
     def __init__(self):
@@ -30,7 +26,6 @@ class FootswitchThread(QThread):
         self.port = port
 
         if not self.running:
-
             self.running = True
             self.start()
 
@@ -45,41 +40,28 @@ class FootswitchThread(QThread):
         ser = None
 
         while self.running:
-
             try:
-
                 if ser is None:
-
-                    ser = serial.Serial(
-                        self.port,
-                        baudrate=9600,
-                        timeout=0
-                    )
+                    ser = serial.Serial(self.port, baudrate=9600, timeout=0)
 
                     self.last_state = ser.cts
 
-                    self.state_changed.emit(
-                        self.last_state
-                    )
+                    self.state_changed.emit(self.last_state)
 
                 state = ser.cts
 
                 if state != self.last_state:
-
                     self.last_state = state
 
-                    self.state_changed.emit(
-                        state
-                    )
+                    self.state_changed.emit(state)
 
                 self.msleep(20)
 
             except Exception:
-
                 try:
                     if ser:
                         ser.close()
-                except:
+                except Exception:
                     pass
 
                 ser = None
@@ -89,5 +71,5 @@ class FootswitchThread(QThread):
         try:
             if ser:
                 ser.close()
-        except:
+        except Exception:
             pass
