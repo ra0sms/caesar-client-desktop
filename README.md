@@ -1,0 +1,168 @@
+# CAESAR Desktop Client
+
+Desktop client for the CAESAR radio communication system.  
+Transmits and receives audio over UDP using the Opus codec via GStreamer, with PTT (Push-to-Talk) control via network or foot pedal.
+
+---
+
+## Features
+
+- Half-duplex audio over UDP (Opus / RTP)
+- PTT via on-screen button or foot pedal (CTS signal via COM port)
+- Server availability monitoring with ping display
+- Configurable audio input/output devices
+- Cross-platform: **Linux** and **Windows**
+
+---
+
+## Requirements
+
+### Linux
+
+| Dependency | Purpose |
+|---|---|
+| Python 3.10+ | Runtime |
+| PyQt5 | GUI |
+| GStreamer 1.x + plugins | Audio pipeline |
+| PulseAudio (`pactl`) | Audio device enumeration |
+| pyserial | Foot pedal (COM port) |
+
+Install GStreamer plugins (Fedora/RHEL):
+```bash
+sudo dnf install gstreamer1 gstreamer1-plugins-base \
+     gstreamer1-plugins-good gstreamer1-plugins-bad-free \
+     gstreamer1-plugin-opus
+```
+
+Install GStreamer plugins (Ubuntu/Debian):
+```bash
+sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base \
+     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+     gstreamer1.0-plugins-ugly
+```
+
+### Windows
+
+| Dependency | Purpose |
+|---|---|
+| Python 3.10+ | Runtime |
+| PyQt5 | GUI |
+| GStreamer 1.x (MSVC build) | Audio pipeline |
+| pyserial | Foot pedal (COM port) |
+
+Install GStreamer from the official site: https://gstreamer.freedesktop.org/download/  
+Choose the **MSVC 64-bit** runtime and development installer.  
+Make sure `C:\gstreamer\1.0\msvc_x86_64\bin` is added to `PATH`.
+
+> **Note:** On Windows, audio uses the system default input/output devices (WASAPI). Per-device selection is not yet supported.
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/ra0sms/caesar-client-desktop.git
+cd caesar-client-desktop
+
+python -m venv venv
+
+# Linux
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+---
+
+## Running
+
+```bash
+python main.py
+```
+
+---
+
+## Building
+
+### Linux — AppImage
+
+```bash
+bash build_appimage.sh
+```
+
+Output: `Releases/CAESAR_Desktop_vX.X.X_-x86_64.AppImage`
+
+Requires `linuxdeploy` in `tools/` directory.
+
+### Windows — EXE
+
+```bat
+build_windows.bat
+```
+
+Output: `Releases\CAESAR_Desktop_vX.X.X_windows_x86_64.exe`
+
+---
+
+## Configuration
+
+Settings are saved automatically to:
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.caesar-desktop/config.json` |
+| Windows | `C:\Users\<user>\.caesar-desktop\config.json` |
+
+---
+
+## Network Ports
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 5000 | UDP | Audio stream (RTP/Opus) |
+| 5001 | UDP | PTT control |
+| 5002 | UDP | Server ping / monitoring |
+
+---
+
+## Project Structure
+
+```
+├── main.py                 # Entry point
+├── config.py               # Load/save settings
+├── footswitch.py           # Foot pedal (CTS via serial)
+├── serial_ports.py         # Serial port enumeration
+├── version.txt             # Current version (source of truth)
+├── changelog.txt           # Release history
+├── build_appimage.sh       # Linux build script
+├── build_windows.bat       # Windows build script
+├── audio/
+│   ├── backend.py          # Cross-platform GStreamer abstraction
+│   ├── rx.py               # Audio receive (UDP → speaker)
+│   ├── tx.py               # Audio transmit (mic → UDP)
+│   └── devices.py          # Device enumeration (delegates to backend)
+├── network/
+│   ├── ptt.py              # PTT UDP client
+│   ├── ping.py             # Ping utility
+│   ├── ping_server.py      # Ping responder
+│   └── server_monitor.py   # Connection status monitor
+├── gui/
+│   └── main_window.py      # Main application window
+└── tools/
+    └── linuxdeploy-x86_64.AppImage
+```
+
+---
+
+## Changelog
+
+See [changelog.txt](changelog.txt).
+
+---
+
+## License
+
+MIT
