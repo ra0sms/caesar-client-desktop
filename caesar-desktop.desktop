@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CAESAR Desktop
+Comment=Remote Radio Client
+Exec=caesar-desktop
+Icon=caesar-desktop
+Terminal=false
+Categories=Network;HamRadio;
