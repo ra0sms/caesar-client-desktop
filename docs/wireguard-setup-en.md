@@ -49,7 +49,7 @@ wg genkey | tee privatekey | wg pubkey > publickey
 
 Display the keys:
 ```bash
-cat rivatekey
+cat privatekey
 cat publickey
 ```
 

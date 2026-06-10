@@ -42,15 +42,15 @@ sudo dnf install wireguard-tools -y
 
 ```bash
 umask 077
-wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
 > `umask 077` — обязательно перед генерацией, иначе приватный ключ получит небезопасные права доступа.
 
 Посмотреть ключи:
 ```bash
-cat /etc/wireguard/server_private.key
-cat /etc/wireguard/server_public.key
+cat privatekey
+cat publickey
 ```
 
 ### 1.3 Включение IP-форвардинга
@@ -118,10 +118,10 @@ sudo systemctl status wg-quick@wg0
 sudo apt install wireguard -y
 
 umask 077
-wg genkey | tee /etc/wireguard/peer1_private.key | wg pubkey > /etc/wireguard/peer1_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
-Публичный ключ (`peer1_public.key`) нужно будет передать на сервер.
+Публичный ключ (`publickey`) нужно будет передать на сервер.
 
 ### 2.2 Конфигурация `/etc/wireguard/wg0.conf`
 
@@ -159,7 +159,7 @@ sudo systemctl enable --now wg-quick@wg0
 sudo apt install wireguard -y
 
 umask 077
-wg genkey | tee /etc/wireguard/peer2_private.key | wg pubkey > /etc/wireguard/peer2_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
 ### 3.2 Конфигурация `/etc/wireguard/wg0.conf`
