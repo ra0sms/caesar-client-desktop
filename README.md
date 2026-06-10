@@ -137,6 +137,13 @@ Settings are saved automatically to:
 | Linux | `~/.caesar-desktop/config.json` |
 | Windows | `C:\Users\<user>\.caesar-desktop\config.json` |
 
+
+Add virtual Audio device for WSJT integration
+```bash
+pactl load-module module-null-sink sink_name=WSJT_SINK
+```
+To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK`.
+
 ---
 
 ## Network Ports
