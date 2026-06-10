@@ -42,15 +42,15 @@ sudo dnf install wireguard-tools -y
 
 ```bash
 umask 077
-wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
 > `umask 077` must be set before key generation — otherwise the private key will have insecure file permissions.
 
 Display the keys:
 ```bash
-cat /etc/wireguard/server_private.key
-cat /etc/wireguard/server_public.key
+cat rivatekey
+cat publickey
 ```
 
 ### 1.3 Enable IP Forwarding
@@ -118,10 +118,10 @@ sudo systemctl status wg-quick@wg0
 sudo apt install wireguard -y
 
 umask 077
-wg genkey | tee /etc/wireguard/peer1_private.key | wg pubkey > /etc/wireguard/peer1_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
-The public key (`peer1_public.key`) will need to be shared with the server.
+The public key (`publickey`) will need to be shared with the server.
 
 ### 2.2 Configuration `/etc/wireguard/wg0.conf`
 
@@ -159,7 +159,7 @@ sudo systemctl enable --now wg-quick@wg0
 sudo apt install wireguard -y
 
 umask 077
-wg genkey | tee /etc/wireguard/peer2_private.key | wg pubkey > /etc/wireguard/peer2_public.key
+wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
 ### 3.2 Configuration `/etc/wireguard/wg0.conf`
