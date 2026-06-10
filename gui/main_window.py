@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 from audio.devices import get_input_devices, get_output_devices
 from config import load_config, save_config
+from network.cat_bridge import CatBridge
 from serial_ports import get_serial_ports
 
 try:
@@ -34,9 +35,15 @@ class MainWindow(QWidget):
 
         cfg = load_config()
 
+        # ---------------- SERVER ----------------
+
         self.server_ip = QLineEdit(cfg.get("server_ip", ""))
+
         self.status = QLabel("Disconnected")
         self.status.setStyleSheet("color: gray;")
+
+        # ---------------- AUDIO ----------------
+
         self.input_combo = QComboBox()
         self.output_combo = QComboBox()
 
@@ -46,17 +53,13 @@ class MainWindow(QWidget):
         self.refresh_audio_devices()
 
         self.input_combo.setCurrentText(cfg.get("input_device", ""))
-
         self.output_combo.setCurrentText(cfg.get("output_device", ""))
 
-        # -------------------------------------------------
-        # FOOTSWITCH
-        # -------------------------------------------------
+        # ---------------- FOOTSWITCH ----------------
 
         self.com_combo = QComboBox()
 
         self.refresh_ports_btn = QPushButton("Refresh")
-
         self.refresh_ports_btn.clicked.connect(self.refresh_ports)
 
         self.refresh_ports()
@@ -65,53 +68,46 @@ class MainWindow(QWidget):
 
         self.footswitch.state_changed.connect(self.footswitch_changed)
 
-        # -------------------------------------------------
-        # CONNECT BUTTONS
-        # -------------------------------------------------
+        # ---------------- BUTTONS ----------------
 
         self.connect_btn = QPushButton("Connect")
-
         self.disconnect_btn = QPushButton("Disconnect")
 
         self.connect_btn.clicked.connect(self.connect_server)
-
         self.disconnect_btn.clicked.connect(self.disconnect_server)
 
-        # -------------------------------------------------
-        # PTT BUTTON
-        # -------------------------------------------------
+        # ---------------- PTT ----------------
 
         self.ptt_btn = QPushButton("PTT OFF")
-
         self.ptt_btn.setCheckable(True)
         self.ptt_btn.setEnabled(False)
-
         self.ptt_btn.toggled.connect(self.ptt_changed)
 
         self.set_ptt_visual(False)
 
-        # -------------------------------------------------
-        # LAYOUT
-        # -------------------------------------------------
+        # ---------------- CAT STATE (IMPORTANT) ----------------
+
+        self.cat = None
+
+        self.cat_port_label = QLabel("PTY: -")
+        self.cat_port_label.setStyleSheet("color: gray;")
+
+        self.cat_status = QLabel("CAT: disabled")
+        self.cat_status.setStyleSheet("color: gray;")
+
+        # ---------------- LAYOUT ----------------
 
         top = QHBoxLayout()
-
         top.addWidget(QLabel("Server IP:"))
-
         top.addWidget(self.server_ip)
 
         buttons = QHBoxLayout()
-
         buttons.addWidget(self.connect_btn)
-
         buttons.addWidget(self.disconnect_btn)
 
         foot_layout = QHBoxLayout()
-
         foot_layout.addWidget(QLabel("PTT Pedal (CTS):"))
-
         foot_layout.addWidget(self.com_combo)
-
         foot_layout.addWidget(self.refresh_ports_btn)
 
         layout = QVBoxLayout()
@@ -138,16 +134,19 @@ class MainWindow(QWidget):
 
         layout.addWidget(self.ptt_btn)
 
+        # CAT UI (правильное место)
+        layout.addWidget(self.cat_port_label)
+        layout.addWidget(self.cat_status)
+
         self.setLayout(layout)
 
         self.setWindowTitle(f"CAESAR Client v{APP_VERSION}")
-
         self.resize(600, 300)
 
         self.monitor.status_changed.connect(self.on_status)
 
     # =====================================================
-    # IP HELPER
+    # IP
     # =====================================================
 
     @property
@@ -169,7 +168,6 @@ class MainWindow(QWidget):
                     font-size: 16px;
                 }
             """)
-
         else:
             self.ptt_btn.setStyleSheet("""
                 QPushButton {
@@ -178,6 +176,10 @@ class MainWindow(QWidget):
                     font-size: 16px;
                 }
             """)
+
+    # =====================================================
+    # FOOTSWITCH
+    # =====================================================
 
     def footswitch_changed(self, pressed):
 
@@ -189,22 +191,17 @@ class MainWindow(QWidget):
 
         if pressed:
             self.ptt.on(self.ip)
-
             self.ptt_btn.setText("PTT ON")
-
             self.set_ptt_visual(True)
-
         else:
             self.ptt.off(self.ip)
-
             self.ptt_btn.setText("PTT OFF")
-
             self.set_ptt_visual(False)
 
         self.ptt_btn.blockSignals(False)
 
     # =====================================================
-    # AUDIO DEVICES
+    # AUDIO
     # =====================================================
 
     def refresh_audio_devices(self):
@@ -233,14 +230,12 @@ class MainWindow(QWidget):
         current = self.com_combo.currentText()
 
         self.com_combo.clear()
-
         self.com_combo.addItem("Disabled")
 
         for port in get_serial_ports():
             self.com_combo.addItem(port)
 
         idx = self.com_combo.findText(current)
-
         if idx >= 0:
             self.com_combo.setCurrentIndex(idx)
 
@@ -262,9 +257,7 @@ class MainWindow(QWidget):
             return
 
         input_dev = self.input_combo.currentText()
-
         output_dev = self.output_combo.currentText()
-
         foot_port = self.com_combo.currentText()
 
         save_config(
@@ -294,10 +287,32 @@ class MainWindow(QWidget):
             self.footswitch.start_monitor(foot_port)
 
         self.connected = True
-
         self.ptt_btn.setEnabled(True)
-
         self.status.setText("Connecting...")
+
+        # ---------------- CAT START ----------------
+
+        if self.cat:
+            self.cat.stop()
+            self.cat.wait()
+
+        self.cat = CatBridge(self.ip, 3001)
+
+        def on_cat_status(ok, msg, port):
+
+            self.cat_port_label.setText(f"PTY: {port if port else '-'}")
+
+            if ok:
+                self.cat_status.setText("CAT: ONLINE | " + msg)
+                self.cat_status.setStyleSheet("color:#00ff66;font-weight:bold;")
+                self.cat_port_label.setStyleSheet("color:#00ff66;")
+            else:
+                self.cat_status.setText("CAT: " + msg)
+                self.cat_status.setStyleSheet("color:#ff4444;font-weight:bold;")
+                self.cat_port_label.setStyleSheet("color:#ff4444;")
+
+        self.cat.status_changed.connect(on_cat_status)
+        self.cat.start()
 
     # =====================================================
     # DISCONNECT
@@ -309,21 +324,17 @@ class MainWindow(QWidget):
 
         try:
             self.ptt.off(self.ip)
-        except Exception:
+        except:
             pass
 
         self.rx.stop()
         self.tx.stop()
-
         self.monitor.stop()
-
         self.footswitch.stop_monitor()
 
         self.ptt_btn.blockSignals(True)
-
         self.ptt_btn.setChecked(False)
         self.ptt_btn.setText("PTT OFF")
-
         self.ptt_btn.blockSignals(False)
 
         self.set_ptt_visual(False)
@@ -331,8 +342,12 @@ class MainWindow(QWidget):
         self.ptt_btn.setEnabled(False)
 
         self.status.setText("Disconnected")
-
         self.status.setStyleSheet("color: gray;")
+
+        if self.cat:
+            self.cat.stop()
+            self.cat.wait()
+            self.cat = None
 
     # =====================================================
     # PTT BUTTON
@@ -344,25 +359,19 @@ class MainWindow(QWidget):
             self.ptt_btn.blockSignals(True)
             self.ptt_btn.setChecked(False)
             self.ptt_btn.blockSignals(False)
-
             return
 
         if state:
             self.ptt.on(self.ip)
-
             self.ptt_btn.setText("PTT ON")
-
             self.set_ptt_visual(True)
-
         else:
             self.ptt.off(self.ip)
-
             self.ptt_btn.setText("PTT OFF")
-
             self.set_ptt_visual(False)
 
     # =====================================================
-    # SERVER STATUS
+    # STATUS
     # =====================================================
 
     def on_status(self, ok, ping_ms):
@@ -372,12 +381,9 @@ class MainWindow(QWidget):
 
         if ok:
             self.status.setText(f"ONLINE | {ping_ms} ms")
-
             self.status.setStyleSheet("color:#00ff66;font-weight:bold;")
-
         else:
             self.status.setText("OFFLINE")
-
             self.status.setStyleSheet("color:#ff4444;font-weight:bold;")
 
     # =====================================================
@@ -388,14 +394,17 @@ class MainWindow(QWidget):
 
         try:
             self.ptt.off(self.ip)
-        except Exception:
+        except:
             pass
 
         self.rx.stop()
         self.tx.stop()
-
         self.monitor.stop()
         self.footswitch.stop_monitor()
 
-        if a0 is not None:
+        if self.cat:
+            self.cat.stop()
+            self.cat.wait()
+
+        if a0:
             a0.accept()
