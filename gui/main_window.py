@@ -85,7 +85,7 @@ class MainWindow(QWidget):
 
         self.set_ptt_visual(False)
 
-        # ---------------- CAT STATE (IMPORTANT) ----------------
+        # ---------------- CAT STATE ----------------
 
         self.cat = None
 
@@ -134,7 +134,7 @@ class MainWindow(QWidget):
 
         layout.addWidget(self.ptt_btn)
 
-        # CAT UI (правильное место)
+        # CAT UI
         layout.addWidget(self.cat_port_label)
         layout.addWidget(self.cat_status)
 
@@ -299,7 +299,6 @@ class MainWindow(QWidget):
         self.cat = CatBridge(self.ip, 3001)
 
         def on_cat_status(ok, msg, port):
-
             self.cat_port_label.setText(f"PTY: {port if port else '-'}")
 
             if ok:
