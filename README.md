@@ -1,7 +1,9 @@
 # CAESAR Desktop Client
 
-Desktop client for the [CAESAR radio communication system](https://github.com/ra0sms/caesar_project).  
+Desktop client for the [NANO radio communication system](https://github.com/ra0sms/nano-server).  
 Transmits and receives audio over UDP using the Opus codec via GStreamer, with PTT (Push-to-Talk) control via network or foot pedal.
+
+Also it can work with the [CAESAR Server](https://github.com/ra0sms/caesar_project) using the same protocol.
 
 ![CAESAR Desktop](screenshots/main_window.png)
 
@@ -9,9 +11,9 @@ Transmits and receives audio over UDP using the Opus codec via GStreamer, with P
 
 ## Server
 
-This client connects to the **CAESAR Server** — a hardware/software device based on a single-board computer that handles audio routing and PTT control.
+This client connects to the **NANO Server** — a hardware/software device based on a single-board computer that handles audio routing and PTT control.
 
-👉 [github.com/ra0sms/caesar_project](https://github.com/ra0sms/caesar_project)
+👉 [github.com/ra0sms/nano-server](https://github.com/ra0sms/nano-server)
 
 ---
 
@@ -24,6 +26,10 @@ This client connects to the **CAESAR Server** — a hardware/software device bas
 - Cross-platform: **Linux** and **Windows**
 
 ---
+
+## VPN Setup
+
+If you have only one real IP address, you can use the VPN setup, see the [VPN Setup Guide](docs/wireguard-setup-en.md). 
 
 ## Download
 
@@ -186,13 +192,3 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 ```
 
 ---
-
-## Changelog
-
-See [changelog.txt](changelog.txt).
-
----
-
-## License
-
-MIT
