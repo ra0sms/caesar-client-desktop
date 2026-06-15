@@ -1,6 +1,11 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.0.3 (2026-06-15)
+--------------------
+- Add: CAT support for communication with transceiver via virtual serial port (Linux only)
+- Fix: minor fixes
+
 v1.0.2 (2026-06-05)
 --------------------
 - Fix: AppImage - gst-launch-1.0 now uses system libraries (LD_LIBRARY_PATH cleared)
