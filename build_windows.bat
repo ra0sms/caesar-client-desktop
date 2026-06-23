@@ -32,6 +32,7 @@ pyinstaller ^
     --onefile ^
     --windowed ^
     --name "%APP_NAME%" ^
+    --add-data "version.txt;." ^
     main.py
 
 if errorlevel 1 (

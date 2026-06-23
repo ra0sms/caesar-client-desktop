@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -15,10 +16,18 @@ from config import load_config
 from gui.session_manager import SessionManager
 from serial_ports import get_serial_ports
 
-try:
-    APP_VERSION = Path(__file__).resolve().parent.parent.joinpath("version.txt").read_text().strip()
-except Exception:
-    APP_VERSION = "unknown"
+
+def _read_version() -> str:
+    """Read version from version.txt, works both in source and PyInstaller bundle."""
+    try:
+        # PyInstaller bundles data files into sys._MEIPASS
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+        return (base / "version.txt").read_text().strip()
+    except Exception:
+        return "unknown"
+
+
+APP_VERSION = _read_version()
 
 
 class MainWindow(QWidget):
