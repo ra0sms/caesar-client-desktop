@@ -1,13 +1,33 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.0.4 (2026-06-23)
+-------------------
+- Refactor: extracted SessionManager from MainWindow (SRP, reduced coupling)
+- Refactor: merged duplicate _pulse_sources/_pulse_sinks into _pactl_list(kind)
+- Refactor: merged duplicate _sounddevice_inputs/_sounddevice_outputs into _sounddevice_list()
+- Refactor: all network ports and magic strings moved to network/constants.py
+- Refactor: version is now read directly from version.txt (no more version.py generation)
+- Fix: removed unused duplicate network/ping.py (had socket leak)
+- Fix: CAT Bridge signal leak on repeated Connect (old handler now disconnected)
+- Fix: replaced bare except: with except Exception: in main_window.py
+- Fix: added threading.Lock to FootswitchThread for thread-safe port access
+- Fix: replaced proc.kill() with proc.terminate() in AudioRX/AudioTX (graceful shutdown)
+- Fix: socket.shutdown() before socket.close() in CatBridge.cleanup() now guarded
+- Fix: added socket.settimeout() to PingServer to prevent thread hang
+- Fix: ServerMonitor now reuses one socket instead of creating a new one per iteration
+- Perf: reduced footswitch poll rate from 20ms to 50ms (less CPU usage)
+- Quality: added type hints to all functions across the entire project
+- Quality: added __init__.py to audio/, network/, gui/ packages
+- Quality: pinned dependency versions in requirements.txt
+
 v1.0.3 (2026-06-15)
---------------------
+-------------------
 - Add: CAT support for communication with transceiver via virtual serial port (Linux only)
 - Fix: minor fixes
 
 v1.0.2 (2026-06-05)
---------------------
+-------------------
 - Fix: AppImage - gst-launch-1.0 now uses system libraries (LD_LIBRARY_PATH cleared)
 - Fix: removed shell=True in AudioRX and AudioTX (security)
 - Add: IP address validation before connecting
@@ -22,5 +42,5 @@ v1.0.2 (2026-06-05)
 - Refactor: replaced bare except with except Exception throughout
 
 v1.0.0 (2026-06-04)
---------------------
+-------------------
 - Initial release

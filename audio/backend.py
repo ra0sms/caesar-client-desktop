@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import List
 
 
 def _is_linux() -> bool:
@@ -20,7 +21,7 @@ def _is_macos() -> bool:
 # ─── GStreamer executable ─────────────────────────────────────────────────────
 
 # Standard GStreamer installation paths on Windows
-_GST_WINDOWS_PATHS = [
+_GST_WINDOWS_PATHS: List[str] = [
     r"C:\gstreamer\1.0\msvc_x86_64\bin",
     r"C:\gstreamer\1.0\x86_64\bin",
     r"C:\Program Files\GStreamer\1.0\msvc_x86_64\bin",
@@ -80,7 +81,7 @@ def get_gst_env() -> dict:
 # ─── GStreamer pipeline elements ──────────────────────────────────────────────
 
 
-def get_gst_src(device: str) -> list:
+def get_gst_src(device: str) -> List[str]:
     """GStreamer audio source element + device arg for the current platform."""
     if _is_windows():
         # WASAPI requires a system device GUID — use system default for now
@@ -91,7 +92,7 @@ def get_gst_src(device: str) -> list:
         return ["pulsesrc", f"device={device}"]
 
 
-def get_gst_sink(device: str) -> list:
+def get_gst_sink(device: str) -> List[str]:
     """GStreamer audio sink element + device arg for the current platform."""
     if _is_windows():
         # WASAPI requires a system device GUID — use system default for now
@@ -105,50 +106,38 @@ def get_gst_sink(device: str) -> list:
 # ─── Device enumeration ───────────────────────────────────────────────────────
 
 
-def get_input_devices() -> list:
+def get_input_devices() -> List[str]:
     """Returns list of input device names for the current platform."""
     if _is_linux():
-        return _pulse_sources()
+        return _pactl_list("sources")
     elif _is_windows():
         # Device selection via WASAPI GUIDs is not yet implemented
         return ["Default"]
     else:
-        return _sounddevice_inputs()
+        return _sounddevice_list(input_channels=True)
 
 
-def get_output_devices() -> list:
+def get_output_devices() -> List[str]:
     """Returns list of output device names for the current platform."""
     if _is_linux():
-        return _pulse_sinks()
+        return _pactl_list("sinks")
     elif _is_windows():
         # Device selection via WASAPI GUIDs is not yet implemented
         return ["Default"]
     else:
-        return _sounddevice_outputs()
+        return _sounddevice_list(input_channels=False)
 
 
 # ─── Linux (PulseAudio) ───────────────────────────────────────────────────────
 
 
-def _pulse_sources() -> list:
-    devices = []
+def _pactl_list(kind: str) -> List[str]:
+    """Run `pactl list short <kind>` and return device names."""
+    devices: List[str] = []
     try:
         output = subprocess.check_output(
-            ["pactl", "list", "short", "sources"], text=True
+            ["pactl", "list", "short", kind], text=True
         )
-        for line in output.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                devices.append(parts[1])
-    except Exception:
-        pass
-    return devices
-
-
-def _pulse_sinks() -> list:
-    devices = []
-    try:
-        output = subprocess.check_output(["pactl", "list", "short", "sinks"], text=True)
         for line in output.splitlines():
             parts = line.split()
             if len(parts) >= 2:
@@ -161,26 +150,15 @@ def _pulse_sinks() -> list:
 # ─── Windows / macOS (sounddevice / PortAudio) ───────────────────────────────
 
 
-def _sounddevice_inputs() -> list:
-    devices = []
+def _sounddevice_list(input_channels: bool = True) -> List[str]:
+    """Query sounddevice for devices with input or output channels."""
+    devices: List[str] = []
     try:
         import sounddevice as sd  # type: ignore
 
+        channel_key = "max_input_channels" if input_channels else "max_output_channels"
         for d in sd.query_devices():
-            if d["max_input_channels"] > 0:
-                devices.append(d["name"])
-    except Exception:
-        pass
-    return devices
-
-
-def _sounddevice_outputs() -> list:
-    devices = []
-    try:
-        import sounddevice as sd  # type: ignore
-
-        for d in sd.query_devices():
-            if d["max_output_channels"] > 0:
+            if d[channel_key] > 0:
                 devices.append(d["name"])
     except Exception:
         pass

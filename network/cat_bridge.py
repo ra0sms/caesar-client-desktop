@@ -1,35 +1,35 @@
-import array
-import fcntl
 import os
 import pty
 import select
 import socket
-import struct
 import termios
 import time
+from typing import Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
+
+from network.constants import CAT_PORT
 
 
 class CatBridge(QThread):
     # ok, message, port_name
     status_changed = pyqtSignal(bool, str, str)
 
-    def __init__(self, host, port):
+    def __init__(self, host: str, port: int = CAT_PORT) -> None:
         super().__init__()
         self.host = host
         self.port = port
 
-        self.master_fd = None
-        self.slave_fd = None
-        self.slave_name = None
+        self.master_fd: Optional[int] = None
+        self.slave_fd: Optional[int] = None
+        self.slave_name: Optional[str] = None
 
-        self.sock = None
-        self.running = False
+        self.sock: Optional[socket.socket] = None
+        self.running: bool = False
 
     # ---------------- PTY ----------------
 
-    def create_pty(self):
+    def create_pty(self) -> str:
         """Создает PTY и настраивает его"""
         # Создаем обычный PTY
         self.master_fd, self.slave_fd = pty.openpty()
@@ -49,7 +49,7 @@ class CatBridge(QThread):
 
         return self.slave_name
 
-    def setup_pty(self):
+    def setup_pty(self) -> None:
         """Настраивает PTY для работы"""
         try:
             attrs = termios.tcgetattr(self.master_fd)
@@ -95,12 +95,12 @@ class CatBridge(QThread):
 
     # ---------------- STATUS ----------------
 
-    def emit_status(self, ok, msg):
+    def emit_status(self, ok: bool, msg: str) -> None:
         self.status_changed.emit(ok, msg, self.slave_name or "")
 
     # ---------------- TCP ----------------
 
-    def connect_tcp(self):
+    def connect_tcp(self) -> None:
         while self.running:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -116,7 +116,7 @@ class CatBridge(QThread):
 
     # ---------------- MAIN LOOP ----------------
 
-    def run(self):
+    def run(self) -> None:
         self.running = True
         port_name = self.create_pty()
         self.connect_tcp()
@@ -136,7 +136,7 @@ class CatBridge(QThread):
 
             except OSError:
                 break
-            except Exception as e:
+            except Exception:
                 pass
 
             # ---------------- Radio → FLRig (TCP → PTY) ----------------
@@ -148,37 +148,37 @@ class CatBridge(QThread):
                             os.write(self.master_fd, resp)
                     except BlockingIOError:
                         pass
-            except Exception as e:
+            except Exception:
                 self.connect_tcp()
 
         self.cleanup()
 
     # ---------------- STOP ----------------
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
         self.emit_status(False, "stopping")
 
     # ---------------- CLEANUP ----------------
 
-    def cleanup(self):
-        try:
-            if self.sock:
+    def cleanup(self) -> None:
+        if self.sock:
+            try:
                 self.sock.shutdown(socket.SHUT_RDWR)
-                self.sock.close()
-        except:
-            pass
+            except OSError:
+                pass
+            self.sock.close()
         self.sock = None
-        try:
-            if self.master_fd:
+        if self.master_fd:
+            try:
                 os.close(self.master_fd)
-        except:
-            pass
-        try:
-            if self.slave_fd:
+            except OSError:
+                pass
+        if self.slave_fd:
+            try:
                 os.close(self.slave_fd)
-        except:
-            pass
+            except OSError:
+                pass
         self.master_fd = None
         self.slave_fd = None
         self.emit_status(False, "stopped")

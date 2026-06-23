@@ -1,4 +1,5 @@
 import subprocess
+from typing import Optional
 
 from audio.backend import (
     find_gst_launch,
@@ -6,13 +7,14 @@ from audio.backend import (
     get_gst_popen_kwargs,
     get_gst_sink,
 )
+from network.constants import AUDIO_PORT
 
 
 class AudioRX:
-    def __init__(self):
-        self.proc = None
+    def __init__(self) -> None:
+        self.proc: Optional[subprocess.Popen] = None
 
-    def start(self, ip, device):
+    def start(self, ip: str, device: str) -> None:
         if self.proc:
             return
 
@@ -20,7 +22,7 @@ class AudioRX:
             find_gst_launch(),
             "-q",
             "udpsrc",
-            "port=5000",
+            f"port={AUDIO_PORT}",
             "caps=application/x-rtp,payload=96",
             "!",
             "rtpjitterbuffer",
@@ -37,8 +39,8 @@ class AudioRX:
 
         self.proc = subprocess.Popen(cmd, env=get_gst_env(), **get_gst_popen_kwargs())
 
-    def stop(self):
+    def stop(self) -> None:
         if self.proc:
-            self.proc.kill()
-            self.proc.wait()
+            self.proc.terminate()
+            self.proc.wait(timeout=5)
             self.proc = None

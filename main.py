@@ -3,11 +3,11 @@ from PyQt5.QtWidgets import QApplication
 
 from audio.rx import AudioRX
 from audio.tx import AudioTX
+from gui.main_window import MainWindow
+from gui.session_manager import SessionManager
 from network.ptt import PTTClient
 from network.ping_server import PingServer
 from network.server_monitor import ServerMonitor
-
-from gui.main_window import MainWindow
 
 from footswitch import FootswitchThread
 
@@ -26,7 +26,9 @@ ping_server.start()
 # client monitor
 monitor = ServerMonitor()
 
-window = MainWindow(rx, tx, ptt, monitor, footswitch)
+session = SessionManager(rx, tx, ptt, monitor, footswitch)
+
+window = MainWindow(session)
 window.show()
 
 sys.exit(app.exec_())

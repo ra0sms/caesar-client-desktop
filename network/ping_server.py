@@ -1,18 +1,16 @@
 import socket
 import threading
+from typing import Optional
 
-PING_PORT = 5002
-
-MAGIC_REQUEST = b"PING_REQUEST"
-MAGIC_RESPONSE = b"PING_RESPONSE"
+from network.constants import PING_PORT, MAGIC_PING_REQUEST, MAGIC_PING_RESPONSE
 
 
 class PingServer:
-    def __init__(self):
-        self.running = False
-        self.thread = None
+    def __init__(self) -> None:
+        self.running: bool = False
+        self.thread: Optional[threading.Thread] = None
 
-    def start(self):
+    def start(self) -> None:
 
         if self.running:
             return
@@ -23,12 +21,13 @@ class PingServer:
 
         self.thread.start()
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
 
-    def worker(self):
+    def worker(self) -> None:
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(1.0)
 
         sock.bind(("0.0.0.0", PING_PORT))
 
@@ -36,9 +35,11 @@ class PingServer:
             try:
                 data, addr = sock.recvfrom(1024)
 
-                if data == MAGIC_REQUEST:
-                    sock.sendto(MAGIC_RESPONSE, addr)
+                if data == MAGIC_PING_REQUEST:
+                    sock.sendto(MAGIC_PING_RESPONSE, addr)
 
+            except socket.timeout:
+                continue
             except Exception:
                 pass
 

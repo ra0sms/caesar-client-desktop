@@ -39,12 +39,6 @@ if [ ! -f tools/linuxdeploy-x86_64.AppImage ]; then
 fi
 
 echo "=========================================="
-echo " Generating version.py"
-echo "=========================================="
-
-echo "VERSION = \"$VERSION\"" > version.py
-
-echo "=========================================="
 echo " Building executable with PyInstaller"
 echo "=========================================="
 

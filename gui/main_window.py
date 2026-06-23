@@ -1,4 +1,4 @@
-import ipaddress
+from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -11,27 +11,21 @@ from PyQt5.QtWidgets import (
 )
 
 from audio.devices import get_input_devices, get_output_devices
-from config import load_config, save_config
-from network.cat_bridge import CatBridge
+from config import load_config
+from gui.session_manager import SessionManager
 from serial_ports import get_serial_ports
 
 try:
-    from version import VERSION as APP_VERSION
-except ImportError:
+    APP_VERSION = Path(__file__).resolve().parent.parent.joinpath("version.txt").read_text().strip()
+except Exception:
     APP_VERSION = "unknown"
 
 
 class MainWindow(QWidget):
-    def __init__(self, rx, tx, ptt, monitor, footswitch):
+    def __init__(self, session: SessionManager):
         super().__init__()
 
-        self.rx = rx
-        self.tx = tx
-        self.ptt = ptt
-        self.monitor = monitor
-        self.footswitch = footswitch
-
-        self.connected = False
+        self.session = session
 
         cfg = load_config()
 
@@ -66,8 +60,6 @@ class MainWindow(QWidget):
 
         self.com_combo.setCurrentText(cfg.get("footswitch_port", ""))
 
-        self.footswitch.state_changed.connect(self.footswitch_changed)
-
         # ---------------- BUTTONS ----------------
 
         self.connect_btn = QPushButton("Connect")
@@ -86,8 +78,6 @@ class MainWindow(QWidget):
         self.set_ptt_visual(False)
 
         # ---------------- CAT STATE ----------------
-
-        self.cat = None
 
         self.cat_port_label = QLabel("PTY: -")
         self.cat_port_label.setStyleSheet("color: gray;")
@@ -143,21 +133,27 @@ class MainWindow(QWidget):
         self.setWindowTitle(f"CAESAR Client v{APP_VERSION}")
         self.resize(600, 300)
 
-        self.monitor.status_changed.connect(self.on_status)
+        # ---------------- SIGNALS ----------------
+
+        self.session.status_message.connect(self.on_status_message)
+        self.session.ptt_state_changed.connect(self.on_ptt_state)
+        self.session.cat_state_changed.connect(self.on_cat_state)
+        self.session.footswitch.state_changed.connect(self.footswitch_changed)
+        self.session.monitor.status_changed.connect(self.on_server_status)
 
     # =====================================================
     # IP
     # =====================================================
 
     @property
-    def ip(self):
+    def ip(self) -> str:
         return self.server_ip.text().strip()
 
     # =====================================================
     # PTT VISUAL
     # =====================================================
 
-    def set_ptt_visual(self, active):
+    def set_ptt_visual(self, active: bool) -> None:
 
         if active:
             self.ptt_btn.setStyleSheet("""
@@ -181,30 +177,14 @@ class MainWindow(QWidget):
     # FOOTSWITCH
     # =====================================================
 
-    def footswitch_changed(self, pressed):
-
-        if not self.connected:
-            return
-
-        self.ptt_btn.blockSignals(True)
-        self.ptt_btn.setChecked(pressed)
-
-        if pressed:
-            self.ptt.on(self.ip)
-            self.ptt_btn.setText("PTT ON")
-            self.set_ptt_visual(True)
-        else:
-            self.ptt.off(self.ip)
-            self.ptt_btn.setText("PTT OFF")
-            self.set_ptt_visual(False)
-
-        self.ptt_btn.blockSignals(False)
+    def footswitch_changed(self, pressed: bool) -> None:
+        self.session.on_footswitch(pressed)
 
     # =====================================================
     # AUDIO
     # =====================================================
 
-    def refresh_audio_devices(self):
+    def refresh_audio_devices(self) -> None:
 
         input_current = self.input_combo.currentText()
         output_current = self.output_combo.currentText()
@@ -225,7 +205,7 @@ class MainWindow(QWidget):
     # PORTS
     # =====================================================
 
-    def refresh_ports(self):
+    def refresh_ports(self) -> None:
 
         current = self.com_combo.currentText()
 
@@ -243,93 +223,25 @@ class MainWindow(QWidget):
     # CONNECT
     # =====================================================
 
-    def connect_server(self):
+    def connect_server(self) -> None:
 
-        if not self.ip:
-            self.status.setText("Enter server IP")
-            return
-
-        try:
-            ipaddress.ip_address(self.ip)
-        except ValueError:
-            self.status.setText("Invalid IP address")
-            self.status.setStyleSheet("color:#ff4444;font-weight:bold;")
-            return
-
-        input_dev = self.input_combo.currentText()
-        output_dev = self.output_combo.currentText()
-        foot_port = self.com_combo.currentText()
-
-        save_config(
-            {
-                "server_ip": self.ip,
-                "input_device": input_dev,
-                "output_device": output_dev,
-                "footswitch_port": foot_port,
-            }
+        ok = self.session.connect(
+            ip=self.ip,
+            input_device=self.input_combo.currentText(),
+            output_device=self.output_combo.currentText(),
+            foot_port=self.com_combo.currentText(),
         )
 
-        self.monitor.set_ip(self.ip)
-        self.monitor.start()
-
-        try:
-            self.tx.start(self.ip, input_dev)
-            self.rx.start(self.ip, output_dev)
-        except FileNotFoundError:
-            self.status.setText("Error: gst-launch-1.0 not found")
-            self.status.setStyleSheet("color:#ff4444;font-weight:bold;")
-            self.monitor.stop()
-            self.connected = False
-            self.ptt_btn.setEnabled(False)
-            return
-
-        if foot_port != "Disabled":
-            self.footswitch.start_monitor(foot_port)
-
-        self.connected = True
-        self.ptt_btn.setEnabled(True)
-        self.status.setText("Connecting...")
-
-        # ---------------- CAT START ----------------
-
-        if self.cat:
-            self.cat.stop()
-            self.cat.wait()
-
-        self.cat = CatBridge(self.ip, 3001)
-
-        def on_cat_status(ok, msg, port):
-            self.cat_port_label.setText(f"PTY: {port if port else '-'}")
-
-            if ok:
-                self.cat_status.setText("CAT: ONLINE | " + msg)
-                self.cat_status.setStyleSheet("color:#00ff66;font-weight:bold;")
-                self.cat_port_label.setStyleSheet("color:#00ff66;")
-            else:
-                self.cat_status.setText("CAT: " + msg)
-                self.cat_status.setStyleSheet("color:#ff4444;font-weight:bold;")
-                self.cat_port_label.setStyleSheet("color:#ff4444;")
-
-        self.cat.status_changed.connect(on_cat_status)
-        self.cat.start()
+        if ok:
+            self.ptt_btn.setEnabled(True)
 
     # =====================================================
     # DISCONNECT
     # =====================================================
 
-    def disconnect_server(self):
+    def disconnect_server(self) -> None:
 
-        self.connected = False
-
-        try:
-            self.ptt.off(self.ip)
-        except:
-            pass
-
-        self.rx.stop()
-        self.tx.stop()
-        self.monitor.stop()
-        self.footswitch.stop_monitor()
+        self.session.disconnect()
 
         self.ptt_btn.blockSignals(True)
         self.ptt_btn.setChecked(False)
@@ -340,42 +252,44 @@ class MainWindow(QWidget):
 
         self.ptt_btn.setEnabled(False)
 
-        self.status.setText("Disconnected")
-        self.status.setStyleSheet("color: gray;")
-
-        if self.cat:
-            self.cat.stop()
-            self.cat.wait()
-            self.cat = None
-
     # =====================================================
     # PTT BUTTON
     # =====================================================
 
-    def ptt_changed(self, state):
+    def ptt_changed(self, state: bool) -> None:
+        self.session.ptt_toggle(state)
 
-        if not self.connected:
-            self.ptt_btn.blockSignals(True)
-            self.ptt_btn.setChecked(False)
-            self.ptt_btn.blockSignals(False)
-            return
+    # =====================================================
+    # SIGNAL HANDLERS
+    # =====================================================
 
-        if state:
-            self.ptt.on(self.ip)
-            self.ptt_btn.setText("PTT ON")
-            self.set_ptt_visual(True)
+    def on_status_message(self, text: str, stylesheet: str) -> None:
+        self.status.setText(text)
+        if stylesheet:
+            self.status.setStyleSheet(stylesheet)
+
+    def on_ptt_state(self, active: bool) -> None:
+        self.ptt_btn.blockSignals(True)
+        self.ptt_btn.setChecked(active)
+        self.ptt_btn.setText("PTT ON" if active else "PTT OFF")
+        self.set_ptt_visual(active)
+        self.ptt_btn.blockSignals(False)
+
+    def on_cat_state(self, ok: bool, msg: str, port: str) -> None:
+        self.cat_port_label.setText(f"PTY: {port if port else '-'}")
+
+        if ok:
+            self.cat_status.setText("CAT: ONLINE | " + msg)
+            self.cat_status.setStyleSheet("color:#00ff66;font-weight:bold;")
+            self.cat_port_label.setStyleSheet("color:#00ff66;")
         else:
-            self.ptt.off(self.ip)
-            self.ptt_btn.setText("PTT OFF")
-            self.set_ptt_visual(False)
+            self.cat_status.setText("CAT: " + msg)
+            self.cat_status.setStyleSheet("color:#ff4444;font-weight:bold;")
+            self.cat_port_label.setStyleSheet("color:#ff4444;")
 
-    # =====================================================
-    # STATUS
-    # =====================================================
+    def on_server_status(self, ok: bool, ping_ms: int) -> None:
 
-    def on_status(self, ok, ping_ms):
-
-        if not self.connected:
+        if not self.session.is_connected:
             return
 
         if ok:
@@ -389,21 +303,9 @@ class MainWindow(QWidget):
     # EXIT
     # =====================================================
 
-    def closeEvent(self, a0):
+    def closeEvent(self, a0) -> None:
 
-        try:
-            self.ptt.off(self.ip)
-        except:
-            pass
-
-        self.rx.stop()
-        self.tx.stop()
-        self.monitor.stop()
-        self.footswitch.stop_monitor()
-
-        if self.cat:
-            self.cat.stop()
-            self.cat.wait()
+        self.session.cleanup()
 
         if a0:
             a0.accept()

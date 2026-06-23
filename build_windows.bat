@@ -23,12 +23,6 @@ if exist AppDir    rmdir /s /q AppDir
 if exist *.spec    del /q *.spec
 
 echo =========================================
-echo  Generating version.py
-echo =========================================
-
-echo VERSION = "%VERSION%" > version.py
-
-echo =========================================
 echo  Building executable with PyInstaller
 echo =========================================
 
