@@ -1,9 +1,10 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 def _is_linux() -> bool:
@@ -163,3 +164,87 @@ def _sounddevice_list(input_channels: bool = True) -> List[str]:
     except Exception:
         pass
     return devices
+
+
+# ─── PulseAudio Null-Sink management (Linux only) ────────────────────────────
+
+# Default null-sink name used by CAESAR Desktop
+NULL_SINK_NAME = "WSJT_SINK"
+NULL_SINK_DESCRIPTION = "CAESAR WSJT Bridge"
+
+
+def null_sink_exists(name: str = NULL_SINK_NAME) -> bool:
+    """Check if a PulseAudio null-sink with the given name already exists."""
+    if not _is_linux():
+        return False
+    try:
+        output = subprocess.check_output(
+            ["pactl", "list", "short", "sinks"], text=True
+        )
+        return any(name in line for line in output.splitlines())
+    except Exception:
+        return False
+
+
+def create_null_sink(name: str = NULL_SINK_NAME, description: str = NULL_SINK_DESCRIPTION) -> Optional[str]:
+    """Create a PulseAudio null-sink module.
+
+    Returns the module index (as string) on success, or None on failure.
+    The sink will appear as both a sink (output) and a monitor source (input).
+    """
+    if not _is_linux():
+        return None
+
+    if null_sink_exists(name):
+        return None  # already exists
+
+    try:
+        output = subprocess.check_output(
+            [
+                "pactl", "load-module", "module-null-sink",
+                f"sink_name={name}",
+                f"sink_properties=device.description={description}",
+            ],
+            text=True,
+        )
+        module_index = output.strip()
+        print(f"[Audio] Created null-sink '{name}' (module index: {module_index})")
+        return module_index
+    except Exception as e:
+        print(f"[Audio] Failed to create null-sink '{name}': {e}")
+        return None
+
+
+def remove_null_sink(name: str = NULL_SINK_NAME) -> bool:
+    """Remove a PulseAudio null-sink by finding and unloading its module.
+
+    Returns True if removed successfully, False otherwise.
+    """
+    if not _is_linux():
+        return False
+
+    if not null_sink_exists(name):
+        return False  # nothing to remove
+
+    try:
+        # Find the module index that owns this sink name
+        output = subprocess.check_output(
+            ["pactl", "list", "short", "modules"], text=True
+        )
+        for line in output.splitlines():
+            # Look for a line like:  <index>\tmodule-null-sink\t...sink_name=WSJT_SINK...
+            if "module-null-sink" in line and name in line:
+                module_index = line.split("\t")[0]
+                subprocess.check_call(
+                    ["pactl", "unload-module", module_index],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                print(f"[Audio] Removed null-sink '{name}' (module index: {module_index})")
+                return True
+
+        print(f"[Audio] Could not find module index for null-sink '{name}'")
+        return False
+    except Exception as e:
+        print(f"[Audio] Failed to remove null-sink '{name}': {e}")
+        return False

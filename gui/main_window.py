@@ -11,7 +11,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from audio.devices import get_input_devices, get_output_devices
+from audio.backend import (
+    create_null_sink,
+    get_input_devices,
+    get_output_devices,
+    null_sink_exists,
+    remove_null_sink,
+    NULL_SINK_NAME,
+)
 from config import load_config
 from gui.session_manager import SessionManager
 from serial_ports import get_serial_ports
@@ -57,6 +64,12 @@ class MainWindow(QWidget):
 
         self.input_combo.setCurrentText(cfg.get("input_device", ""))
         self.output_combo.setCurrentText(cfg.get("output_device", ""))
+
+        # ---------------- WSJT BRIDGE (null-sink) ----------------
+
+        self.wsjt_btn = QPushButton()
+        self.wsjt_btn.clicked.connect(self.toggle_null_sink)
+        self._update_wsjt_button()
 
         # ---------------- FOOTSWITCH ----------------
 
@@ -129,6 +142,9 @@ class MainWindow(QWidget):
         layout.addWidget(QLabel("Output"))
         layout.addWidget(self.output_combo)
 
+        # WSJT Bridge
+        layout.addWidget(self.wsjt_btn)
+
         layout.addLayout(foot_layout)
 
         layout.addWidget(self.ptt_btn)
@@ -140,7 +156,7 @@ class MainWindow(QWidget):
         self.setLayout(layout)
 
         self.setWindowTitle(f"CAESAR Client v{APP_VERSION}")
-        self.resize(600, 300)
+        self.resize(600, 350)
 
         # ---------------- SIGNALS ----------------
 
@@ -209,6 +225,50 @@ class MainWindow(QWidget):
 
         if self.output_combo.findText(output_current) >= 0:
             self.output_combo.setCurrentText(output_current)
+
+    # =====================================================
+    # WSJT BRIDGE (null-sink)
+    # =====================================================
+
+    def _update_wsjt_button(self) -> None:
+        """Update the WSJT Bridge button text/style based on null-sink state."""
+        if null_sink_exists():
+            self.wsjt_btn.setText("Remove WSJT Bridge")
+            self.wsjt_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #cc4400;
+                    color: white;
+                    font-weight: bold;
+                }
+            """)
+        else:
+            self.wsjt_btn.setText("Create WSJT Bridge")
+            self.wsjt_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #006644;
+                    color: white;
+                    font-weight: bold;
+                }
+            """)
+
+    def toggle_null_sink(self) -> None:
+        """Create or remove the PulseAudio null-sink for WSJT bridge."""
+        if null_sink_exists():
+            ok = remove_null_sink()
+            if ok:
+                self.status.setText("WSJT Bridge removed")
+                self.status.setStyleSheet("color: orange;")
+        else:
+            result = create_null_sink()
+            if result is not None:
+                self.status.setText(f"WSJT Bridge created (module {result})")
+                self.status.setStyleSheet("color: #00ff66; font-weight: bold;")
+            else:
+                self.status.setText("Failed to create WSJT Bridge (already exists?)")
+                self.status.setStyleSheet("color: #ff4444;")
+
+        self._update_wsjt_button()
+        self.refresh_audio_devices()
 
     # =====================================================
     # PORTS
