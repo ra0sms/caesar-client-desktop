@@ -1,6 +1,11 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.0.6 (2026-06-29)
+-------------------
+- Fix: restored legacy 1-byte PTT packet for backward compatibility with old servers
+- Quality: PTT keepalive now sends both legacy (1-byte) and extended (6-byte) packets
+
 v1.0.5 (2026-06-29)
 -------------------
 - Add: WSJT Bridge — PulseAudio null-sink management (create/remove) from GUI
