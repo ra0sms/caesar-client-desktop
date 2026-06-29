@@ -170,7 +170,7 @@ def _sounddevice_list(input_channels: bool = True) -> List[str]:
 
 # Default null-sink name used by CAESAR Desktop
 NULL_SINK_NAME = "WSJT_SINK"
-NULL_SINK_DESCRIPTION = "CAESAR WSJT Bridge"
+NULL_SINK_DESCRIPTION = "WSJT_SINK"
 
 
 def null_sink_exists(name: str = NULL_SINK_NAME) -> bool:

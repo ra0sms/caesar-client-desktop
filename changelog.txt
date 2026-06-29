@@ -1,6 +1,11 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.0.6 (2026-06-29)
+-------------------
+- Fix: null-sink description changed from "CAESAR WSJT Bridge" to "WSJT_SINK"
+  so the device appears as "WSJT_SINK" in PulseAudio device lists
+
 v1.0.5 (2026-06-29)
 -------------------
 - Add: WSJT Bridge — PulseAudio null-sink management (create/remove) from GUI
