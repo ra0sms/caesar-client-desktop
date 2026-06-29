@@ -248,3 +248,84 @@ def remove_null_sink(name: str = NULL_SINK_NAME) -> bool:
     except Exception as e:
         print(f"[Audio] Failed to remove null-sink '{name}': {e}")
         return False
+
+
+# ─── PulseAudio Loopback management (Linux only) ────────────────────────────
+
+# Default loopback name for routing speaker audio to WSJT_SINK
+LOOPBACK_NAME = "CAESAR_LOOPBACK"
+
+
+def loopback_exists(name: str = LOOPBACK_NAME) -> bool:
+    """Check if a loopback module exists by looking for module-loopback in modules list."""
+    if not _is_linux():
+        return False
+    try:
+        output = subprocess.check_output(
+            ["pactl", "list", "short", "modules"], text=True
+        )
+        return any("module-loopback" in line for line in output.splitlines())
+    except Exception:
+        return False
+
+
+def create_loopback(source: str, sink: str, name: str = LOOPBACK_NAME) -> Optional[str]:
+    """Create a PulseAudio loopback from source monitor to sink.
+
+    This routes audio from the output device (e.g. speakers) to the null-sink,
+    allowing JTDX/WSJT-X to decode audio received from the server.
+
+    Returns the module index on success, or None on failure.
+    """
+    if not _is_linux():
+        return None
+
+    if loopback_exists(name):
+        return None  # already exists
+
+    try:
+        output = subprocess.check_output(
+            [
+                "pactl", "load-module", "module-loopback",
+                f"source={source}",
+                f"sink={sink}",
+            ],
+            text=True,
+        )
+        module_index = output.strip()
+        print(f"[Audio] Created loopback '{name}' ({source} → {sink}, module: {module_index})")
+        return module_index
+    except Exception as e:
+        print(f"[Audio] Failed to create loopback: {e}")
+        return None
+
+
+def remove_loopback(name: str = LOOPBACK_NAME) -> bool:
+    """Remove a PulseAudio loopback module.
+
+    Returns True if removed successfully, False otherwise.
+    """
+    if not _is_linux():
+        return False
+
+    if not loopback_exists(name):
+        return False
+
+    try:
+        output = subprocess.check_output(
+            ["pactl", "list", "short", "modules"], text=True
+        )
+        for line in output.splitlines():
+            if "module-loopback" in line:
+                module_index = line.split("\t")[0]
+                subprocess.check_call(
+                    ["pactl", "unload-module", module_index],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                print(f"[Audio] Removed loopback (module: {module_index})")
+                return True
+        return False
+    except Exception as e:
+        print(f"[Audio] Failed to remove loopback: {e}")
+        return False
