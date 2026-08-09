@@ -56,7 +56,7 @@ class SessionManager(QObject):
 
     # ── Connect ─────────────────────────────────────────────────────────────
 
-    def connect(self, ip: str, input_device: str, output_device: str, foot_port: str) -> bool:
+    def connect(self, ip: str, input_device: str, output_device: str, foot_port: str, enable_cat: bool = True) -> bool:
         if not ip:
             self.status_message.emit("Enter server IP", "")
             return False
@@ -72,6 +72,7 @@ class SessionManager(QObject):
             "input_device": input_device,
             "output_device": output_device,
             "footswitch_port": foot_port,
+            "cat_enabled": "true" if enable_cat else "false",
         })
 
         self._ip = ip
@@ -93,7 +94,8 @@ class SessionManager(QObject):
         self.status_message.emit("Connecting...", "")
 
         # ── CAT Bridge ──────────────────────────────────────────────────
-        self._start_cat()
+        if enable_cat:
+            self._start_cat()
 
         return True
 

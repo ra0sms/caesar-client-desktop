@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -101,6 +102,10 @@ class MainWindow(QWidget):
 
         # ---------------- CAT STATE ----------------
 
+        self.cat_checkbox = QCheckBox("Enable CAT (transceiver control)")
+        self.cat_checkbox.setChecked(cfg.get("cat_enabled", "true") != "false")
+        self.cat_checkbox.toggled.connect(self.cat_toggled)
+
         self.cat_port_label = QLabel("PTY: -")
         self.cat_port_label.setStyleSheet("color: gray;")
 
@@ -150,6 +155,7 @@ class MainWindow(QWidget):
         layout.addWidget(self.ptt_btn)
 
         # CAT UI
+        layout.addWidget(self.cat_checkbox)
         layout.addWidget(self.cat_port_label)
         layout.addWidget(self.cat_status)
 
@@ -299,6 +305,7 @@ class MainWindow(QWidget):
             input_device=self.input_combo.currentText(),
             output_device=self.output_combo.currentText(),
             foot_port=self.com_combo.currentText(),
+            enable_cat=self.cat_checkbox.isChecked(),
         )
 
         if ok:
@@ -311,6 +318,13 @@ class MainWindow(QWidget):
     def disconnect_server(self) -> None:
 
         self.session.disconnect()
+
+        # Reset CAT labels when disconnected without CAT
+        if not self.cat_checkbox.isChecked():
+            self.cat_port_label.setText("PTY: -")
+            self.cat_port_label.setStyleSheet("color: gray;")
+            self.cat_status.setText("CAT: disabled")
+            self.cat_status.setStyleSheet("color: gray;")
 
         self.ptt_btn.blockSignals(True)
         self.ptt_btn.setChecked(False)
@@ -336,6 +350,14 @@ class MainWindow(QWidget):
         self.status.setText(text)
         if stylesheet:
             self.status.setStyleSheet(stylesheet)
+
+    def cat_toggled(self, checked: bool) -> None:
+        """Update the CAT status label when the checkbox is toggled."""
+        if not checked:
+            self.cat_port_label.setText("PTY: -")
+            self.cat_port_label.setStyleSheet("color: gray;")
+            self.cat_status.setText("CAT: disabled")
+            self.cat_status.setStyleSheet("color: gray;")
 
     def on_ptt_state(self, active: bool) -> None:
         self.ptt_btn.blockSignals(True)

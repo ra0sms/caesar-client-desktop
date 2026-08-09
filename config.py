@@ -12,6 +12,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     "input_device": "",
     "output_device": "",
     "footswitch_port": "",
+    "cat_enabled": "true",
 }
 
 

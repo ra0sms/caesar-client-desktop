@@ -1,6 +1,13 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.0.7 (2026-08-09)
+-------------------
+- Add: CAT enable/disable checkbox in main window — connect in either no-CAT or CAT mode
+- Add: cat_enabled setting persisted to config (defaults to enabled)
+- Refactor: SessionManager.connect() now accepts enable_cat flag; CAT bridge only starts when enabled
+- Fix: restored missing network/ptt.py (PTTClient) required for connection
+
 v1.0.6 (2026-06-29)
 -------------------
 - Fix: restored legacy 1-byte PTT packet for backward compatibility with old servers
