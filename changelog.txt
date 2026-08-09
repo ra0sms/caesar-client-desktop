@@ -7,6 +7,9 @@ v1.0.7 (2026-08-09)
 - Add: cat_enabled setting persisted to config (defaults to enabled)
 - Refactor: SessionManager.connect() now accepts enable_cat flag; CAT bridge only starts when enabled
 - Fix: restored missing network/ptt.py (PTTClient) required for connection
+- Add: PTTClient now sends both legacy (1-byte) and extended (6-byte) packets
+- Add: PTT keepalive thread sends '1'-packets while PTT is held ON (fail-safe on server)
+- Quality: PTT keepalive interval defined in network/constants.py (PTT_KEEPALIVE_INTERVAL)
 
 v1.0.6 (2026-06-29)
 -------------------

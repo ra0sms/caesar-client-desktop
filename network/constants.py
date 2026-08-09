@@ -13,6 +13,10 @@ AUDIO_PORT = 5000
 # PTT control
 PTT_PORT = 5001
 
+# PTT keepalive interval (seconds). Must be less than the server's
+# PTT_KEEPALIVE_TIMEOUT (0.5s) so the fail-safe does not cut PTT.
+PTT_KEEPALIVE_INTERVAL = 0.2
+
 # Server ping / monitoring
 PING_PORT = 5002
 
