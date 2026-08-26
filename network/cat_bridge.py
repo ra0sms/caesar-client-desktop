@@ -30,31 +30,31 @@ class CatBridge(QThread):
     # ---------------- PTY ----------------
 
     def create_pty(self) -> str:
-        """Создает PTY и настраивает его"""
-        # Создаем обычный PTY
+        """Create a PTY pair and configure it."""
         self.master_fd, self.slave_fd = pty.openpty()
         self.slave_name = os.ttyname(self.slave_fd)
 
         print(f"[CAT] Virtual port created: {self.slave_name}")
 
-        # Настраиваем порт
         self.setup_pty()
 
-        # Устанавливаем права доступа
+        # Restrict access to the owning user only — the slave otherwise
+        # inherits permissions that can allow other local users to read
+        # from / write to the radio control port.
         try:
-            os.chmod(self.slave_name, 0o666)
-            print(f"[CAT] Set permissions 666 on {self.slave_name}")
+            os.chmod(self.slave_name, 0o600)
+            print(f"[CAT] Set permissions 600 on {self.slave_name}")
         except Exception as e:
             print(f"[CAT] Could not set permissions: {e}")
 
         return self.slave_name
 
     def setup_pty(self) -> None:
-        """Настраивает PTY для работы"""
+        """Configure the PTY (raw mode, no flow control, non-blocking reads)."""
         try:
             attrs = termios.tcgetattr(self.master_fd)
 
-            # Базовые настройки порта
+            # Basic port settings
             attrs[2] |= termios.CLOCAL | termios.CREAD
             attrs[2] &= ~termios.CSIZE
             attrs[2] |= termios.CS8
@@ -62,19 +62,19 @@ class CatBridge(QThread):
             attrs[2] &= ~termios.CSTOPB
             attrs[2] &= ~termios.CRTSCTS
 
-            # Отключаем управление потоком
+            # Disable flow control
             attrs[0] &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
 
-            # Отключаем эхо и канонический режим
+            # Disable echo and canonical mode
             attrs[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)
 
-            # Неблокирующий режим
+            # Non-blocking reads
             attrs[6] = 0  # VMIN = 0
-            attrs[5] = 1  # VTIME = 0.1 сек
+            attrs[5] = 1  # VTIME = 0.1 sec
 
             termios.tcsetattr(self.master_fd, termios.TCSANOW, attrs)
 
-            # Настройка для slave FD
+            # Same settings for the slave FD
             attrs_slave = termios.tcgetattr(self.slave_fd)
             attrs_slave[2] |= termios.CLOCAL | termios.CREAD
             attrs_slave[2] &= ~termios.CSIZE

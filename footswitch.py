@@ -51,12 +51,12 @@ class FootswitchThread(QThread):
 
                     ser = serial.Serial(port, baudrate=9600, timeout=0)
 
-                    # КЛЮЧЕВОЙ МОМЕНТ: опускаем RTS сразу после открытия
-                    # Небольшая задержка для стабильности драйвера
+                    # Key step: drop RTS right after opening the port.
+                    # Small delay for driver stability.
                     time.sleep(0.05)
                     ser.rts = False
 
-                    # Сохраняем начальное состояние CTS
+                    # Store the initial CTS state
                     self.last_state = ser.cts
                     self.state_changed.emit(self.last_state)
 
