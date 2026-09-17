@@ -19,6 +19,7 @@ class MarqueeLabel(QWidget):
     SPEED_PX_PER_SEC = 45.0
     FPS = 30
     MAX_TEXT_CHARS = 20000  # safety cap; trimming preserves the scroll pos
+    MAX_FRAME_DT = 0.2      # clamp a single tick's elapsed time (seconds)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,8 +65,14 @@ class MarqueeLabel(QWidget):
             self._offset = new_width
 
         self._trim_buffer()
-        self._last_tick = None
         if not self._timer.isActive():
+            # Anchor the clock to now before (re)starting: characters can
+            # arrive in bursts (several decoded symbols delivered within
+            # the same animation frame), and each burst must not disturb
+            # an already-running clock — only a genuine restart from idle
+            # needs a fresh reference, otherwise a stale timestamp from
+            # before a long pause would produce one huge catch-up jump.
+            self._last_tick = time.monotonic()
             self._timer.start()
         self.update()
 
@@ -99,7 +106,11 @@ class MarqueeLabel(QWidget):
     def _tick(self) -> None:
         now = time.monotonic()
         if self._last_tick is not None:
-            self._offset += self.SPEED_PX_PER_SEC * (now - self._last_tick)
+            # Clamp so a delayed/coalesced tick (GUI thread briefly busy)
+            # cannot make the text jump straight past the window in one
+            # frame, which would look like it vanished outright.
+            dt = min(now - self._last_tick, self.MAX_FRAME_DT)
+            self._offset += self.SPEED_PX_PER_SEC * dt
         self._last_tick = now
         self.update()
 
