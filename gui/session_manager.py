@@ -7,6 +7,7 @@ from audio.rx import AudioRX
 from audio.tx import AudioTX
 from config import load_config, save_config
 from footswitch import FootswitchThread
+from morse.decoder import MorseDecoder
 from network.cat_bridge import CatBridge
 from network.constants import CAT_PORT
 from network.ptt import PTTClient
@@ -31,6 +32,7 @@ class SessionManager(QObject):
         ptt: PTTClient,
         monitor: ServerMonitor,
         footswitch: FootswitchThread,
+        morse: MorseDecoder,
     ) -> None:
         super().__init__()
         self.rx = rx
@@ -38,9 +40,11 @@ class SessionManager(QObject):
         self.ptt = ptt
         self.monitor = monitor
         self.footswitch = footswitch
+        self.morse = morse
 
         self.connected: bool = False
         self._ip: str = ""
+        self._output_device: str = ""
         self._cat: Optional[CatBridge] = None
         self._cat_status_handler = None
 
@@ -56,7 +60,15 @@ class SessionManager(QObject):
 
     # ── Connect ─────────────────────────────────────────────────────────────
 
-    def connect(self, ip: str, input_device: str, output_device: str, foot_port: str, enable_cat: bool = True) -> bool:
+    def connect(
+        self,
+        ip: str,
+        input_device: str,
+        output_device: str,
+        foot_port: str,
+        enable_cat: bool = True,
+        morse_enabled: bool = False,
+    ) -> bool:
         if not ip:
             self.status_message.emit("Enter server IP", "")
             return False
@@ -73,19 +85,25 @@ class SessionManager(QObject):
             "output_device": output_device,
             "footswitch_port": foot_port,
             "cat_enabled": "true" if enable_cat else "false",
+            "morse_enabled": "true" if morse_enabled else "false",
         })
 
         self._ip = ip
+        self._output_device = output_device
         self.monitor.set_ip(ip)
         self.monitor.start()
 
         try:
             self.tx.start(ip, input_device)
-            self.rx.start(ip, output_device)
+            self.rx.start(ip, output_device, tap=morse_enabled)
         except FileNotFoundError:
             self.status_message.emit("Error: gst-launch-1.0 not found", "color:#ff4444;font-weight:bold;")
             self.monitor.stop()
             return False
+
+        # ── CW decoder ──────────────────────────────────────────────────
+        self.rx.pcm_callback = self.morse.feed_pcm
+        self.morse.set_enabled(morse_enabled)
 
         if foot_port and foot_port != "Disabled":
             self.footswitch.start_monitor(foot_port)
@@ -98,6 +116,31 @@ class SessionManager(QObject):
             self._start_cat()
 
         return True
+
+    def set_morse_enabled(self, enabled: bool) -> None:
+        """Toggle the CW decoder.
+
+        The RX audio tap branch is only present in the GStreamer pipeline
+        when the decoder is enabled, so toggling at runtime restarts RX
+        briefly (a few hundred ms of audio gap).
+        """
+        if not self.connected:
+            self.morse.set_enabled(enabled)
+            return
+
+        if enabled == self.morse.enabled:
+            self.morse.set_enabled(enabled)
+            return
+
+        self.status_message.emit("Restarting audio for CW decoder...", "color: orange;")
+        self.rx.stop()
+        try:
+            self.rx.start(self._ip, self._output_device, tap=enabled)
+        except FileNotFoundError:
+            self.status_message.emit("Error: gst-launch-1.0 not found", "color:#ff4444;font-weight:bold;")
+            self.morse.set_enabled(False)
+            return
+        self.morse.set_enabled(enabled)
 
     def _start_cat(self) -> None:
         if self._cat:
@@ -128,6 +171,7 @@ class SessionManager(QObject):
         except Exception:
             pass
 
+        self.morse.set_enabled(False)
         self.rx.stop()
         self.tx.stop()
         self.monitor.stop()
@@ -181,6 +225,7 @@ class SessionManager(QObject):
         except Exception:
             pass
 
+        self.morse.set_enabled(False)
         self.rx.stop()
         self.tx.stop()
         self.monitor.stop()

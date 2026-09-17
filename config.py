@@ -13,6 +13,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     "output_device": "",
     "footswitch_port": "",
     "cat_enabled": "true",
+    "morse_enabled": "false",
 }
 
 

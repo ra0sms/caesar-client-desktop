@@ -23,6 +23,10 @@ This client connects to the **NANO Server** — a hardware/software device based
 - PTT via on-screen button or foot pedal (CTS signal via COM port)
 - Server availability monitoring with ping display
 - Configurable audio input/output devices
+- Automatic CW (Morse code) decoder — decoded text appears in a live
+  one-line scrolling ticker ("бегущая строка"), with automatic beat-tone
+  detection (300–1200 Hz) and automatic speed estimation (no extra
+  dependencies)
 - Cross-platform: **Linux** and **Windows**
 
 ---

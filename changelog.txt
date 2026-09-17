@@ -1,6 +1,23 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.1.0 (unreleased)
+-------------------
+- Add: automatic CW (Morse code) decoder with a live one-line scrolling ticker in the GUI
+- Add: morse/ package — pure-Python Goertzel filter bank with automatic beat-tone tracking
+  (300–1200 Hz, no manual tuning), adaptive timing and ITU table
+  (no new dependencies; works from ~5 to ~45+ WPM, auto speed estimation)
+- Add: RX audio tap branch (tee + fdsink) in audio/rx.py — decoded PCM is branched off
+  to the CW decoder without touching the playback path or the network stream
+- Fix: both tee branches use a queue (a sink placed directly on a tee pad deadlocks
+  the whole RX pipeline and kills the sound)
+- Add: CW Decoder panel in MainWindow (enable checkbox, auto-detected tone display,
+  WPM estimate, Clear) and the one-line scrolling ticker
+- Add: gui/marquee.py — single-line horizontally scrolling ticker ("бегущая строка")
+- Add: morse_enabled setting persisted to config
+- Add: offline self-test (python -m morse.self_test) that sweeps tones/WPM/noise
+- Perf: the decoder runs in the RX reader thread at 8 kHz mono S16LE (<1% CPU)
+
 v1.0.7 (2026-08-09)
 -------------------
 - Add: CAT enable/disable checkbox in main window — connect in either no-CAT or CAT mode

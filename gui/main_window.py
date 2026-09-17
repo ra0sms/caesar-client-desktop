@@ -20,7 +20,8 @@ from audio.backend import (
     remove_null_sink,
     NULL_SINK_NAME,
 )
-from config import load_config
+from config import load_config, save_config
+from gui.marquee import MarqueeLabel
 from gui.session_manager import SessionManager
 from serial_ports import get_serial_ports
 
@@ -112,6 +113,22 @@ class MainWindow(QWidget):
         self.cat_status = QLabel("CAT: disabled")
         self.cat_status.setStyleSheet("color: gray;")
 
+        # ---------------- CW DECODER ----------------
+
+        self.morse_check = QCheckBox("CW Decoder")
+        self.morse_tone_label = QLabel("Tone: auto")
+        self.morse_tone_label.setStyleSheet("color: gray;")
+        self.morse_wpm_label = QLabel("WPM: --")
+        self.morse_wpm_label.setStyleSheet("color: gray;")
+        self.morse_clear_btn = QPushButton("Clear")
+
+        self.morse_marquee = MarqueeLabel()
+
+        self.morse_check.setChecked(cfg.get("morse_enabled", "false") == "true")
+
+        # keep the decoder state in sync with the UI at startup
+        self.session.morse.set_enabled(self.morse_check.isChecked())
+
         # ---------------- LAYOUT ----------------
 
         top = QHBoxLayout()
@@ -150,6 +167,17 @@ class MainWindow(QWidget):
         # WSJT Bridge
         layout.addWidget(self.wsjt_btn)
 
+        # CW Decoder
+        morse_header = QHBoxLayout()
+        morse_header.addWidget(self.morse_check)
+        morse_header.addWidget(self.morse_tone_label)
+        morse_header.addWidget(self.morse_wpm_label)
+        morse_header.addStretch()
+        morse_header.addWidget(self.morse_clear_btn)
+
+        layout.addLayout(morse_header)
+        layout.addWidget(self.morse_marquee)
+
         layout.addLayout(foot_layout)
 
         layout.addWidget(self.ptt_btn)
@@ -162,7 +190,7 @@ class MainWindow(QWidget):
         self.setLayout(layout)
 
         self.setWindowTitle(f"CAESAR Client v{APP_VERSION}")
-        self.resize(600, 350)
+        self.resize(620, 500)
 
         # ---------------- SIGNALS ----------------
 
@@ -171,6 +199,12 @@ class MainWindow(QWidget):
         self.session.cat_state_changed.connect(self.on_cat_state)
         self.session.footswitch.state_changed.connect(self.footswitch_changed)
         self.session.monitor.status_changed.connect(self.on_server_status)
+
+        self.morse_check.toggled.connect(self.morse_toggled)
+        self.morse_clear_btn.clicked.connect(self.morse_clear)
+        self.session.morse.text_decoded.connect(self.on_morse_text)
+        self.session.morse.status_changed.connect(self.on_morse_status)
+        self.session.morse.tone_detected.connect(self.on_morse_tone)
 
     # =====================================================
     # IP
@@ -306,6 +340,7 @@ class MainWindow(QWidget):
             output_device=self.output_combo.currentText(),
             foot_port=self.com_combo.currentText(),
             enable_cat=self.cat_checkbox.isChecked(),
+            morse_enabled=self.morse_check.isChecked(),
         )
 
         if ok:
@@ -389,6 +424,35 @@ class MainWindow(QWidget):
         else:
             self.status.setText("OFFLINE")
             self.status.setStyleSheet("color:#ff4444;font-weight:bold;")
+
+    # =====================================================
+    # CW DECODER
+    # =====================================================
+
+    def morse_toggled(self, checked: bool) -> None:
+        self.session.set_morse_enabled(checked)
+
+        cfg = load_config()
+        cfg["morse_enabled"] = "true" if checked else "false"
+        save_config(cfg)
+
+    def morse_clear(self) -> None:
+        self.morse_marquee.clear()
+
+    def on_morse_tone(self, freq_hz: int) -> None:
+        self.morse_tone_label.setText(f"Tone: auto ({freq_hz} Hz)")
+        self.morse_tone_label.setStyleSheet("color:#00ff66;font-weight:bold;")
+
+    def on_morse_text(self, text: str) -> None:
+        self.morse_marquee.append_text(text)
+
+    def on_morse_status(self, active: bool, wpm: int) -> None:
+        if wpm > 0:
+            self.morse_wpm_label.setText(f"WPM: {wpm}")
+        if active:
+            self.morse_wpm_label.setStyleSheet("color:#00ff66;font-weight:bold;")
+        else:
+            self.morse_wpm_label.setStyleSheet("color: gray;")
 
     # =====================================================
     # EXIT
