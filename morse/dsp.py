@@ -47,10 +47,14 @@ class ToneBank:
     frequency. This makes decoding independent of the actual beat tone
     produced by the radio (typically 300–1200 Hz).
 
-    The dominant bin is selected by the highest smoothed energy, which
-    rejects transient noise peaks; the returned magnitude is the raw
-    current-window magnitude of that bin, so short CW gaps still make
-    the gate close.
+    The tracked bin is "sticky": once one bin is locked in, a competing
+    bin only takes over after it has led by a margin for several
+    consecutive windows (see ``_locked`` below). Without this, a nearby
+    station or noise burst that is momentarily louder than the wanted
+    signal during its own inter-element gaps — a common occurrence
+    under QRM — would otherwise be re-elected as "dominant" on the
+    spot, and the gate would then key off a completely different
+    signal for a few windows, garbling the timing.
     """
 
     # CW passband to scan (Hz)
@@ -59,6 +63,12 @@ class ToneBank:
     FREQ_STEP = 50.0
 
     EMA_ALPHA = 0.25  # per-window energy smoothing
+
+    # Bin-lock hysteresis: a challenger must beat the locked bin's energy
+    # by this factor, for this many consecutive windows, before it takes
+    # over as the tracked tone.
+    SWITCH_MARGIN = 1.6
+    SWITCH_HOLD_WINDOWS = 4
 
     def __init__(self, sample_rate=SAMPLE_RATE, window_size=80, manual_tone=0.0):
         self.sample_rate = sample_rate
@@ -75,6 +85,26 @@ class ToneBank:
                 freq += self.FREQ_STEP
 
         self._energy = [0.0] * len(self.freqs)
+        self._locked = 0
+        self._challenger = None
+        self._challenger_count = 0
+        self._frozen = False
+
+    def freeze(self) -> None:
+        """Stop re-electing the locked bin.
+
+        Called once the decoder has confirmed a real mark, so that a
+        competing station or noise burst that outshines the wanted
+        signal during its own inter-element gaps can no longer steal
+        the lock for the rest of the transmission.
+        """
+        self._frozen = True
+
+    def unfreeze(self) -> None:
+        """Resume free bin acquisition (after a reset / end-of-tx)."""
+        self._frozen = False
+        self._challenger = None
+        self._challenger_count = 0
 
     def _add_bin(self, freq: float) -> None:
         n = self.window
@@ -89,17 +119,13 @@ class ToneBank:
 
     @property
     def dominant_freq(self) -> float:
-        """Frequency (Hz) of the currently tracked dominant tone."""
+        """Frequency (Hz) of the currently tracked (locked) tone."""
         if not self.freqs:
             return 0.0
-        best = 0
-        for i in range(1, len(self._energy)):
-            if self._energy[i] > self._energy[best]:
-                best = i
-        return self.freqs[best]
+        return self.freqs[self._locked]
 
     def process(self, samples):
-        """Return ``(mag, freq_hz)`` for the dominant tone in ``samples``."""
+        """Return ``(mag, freq_hz)`` for the tracked tone in ``samples``."""
         n = self.window
         if n <= 0 or not samples:
             return 0.0, self.dominant_freq
@@ -116,13 +142,42 @@ class ToneBank:
             mags.append(math.sqrt(max(power, 0.0)) / n)
 
         alpha = self.EMA_ALPHA
-        best = 0
+        raw_best = 0
         for i, m in enumerate(mags):
             self._energy[i] = (1.0 - alpha) * self._energy[i] + alpha * m
-            if self._energy[i] > self._energy[best]:
-                best = i
+            if self._energy[i] > self._energy[raw_best]:
+                raw_best = i
 
-        return mags[best], self.freqs[best]
+        self._track_lock(raw_best)
+
+        return mags[self._locked], self.freqs[self._locked]
+
+    def _track_lock(self, raw_best: int) -> None:
+        """Only let ``raw_best`` take over the locked bin after it has
+        led by ``SWITCH_MARGIN`` for ``SWITCH_HOLD_WINDOWS`` in a row."""
+        if self._frozen:
+            return
+
+        if raw_best == self._locked:
+            self._challenger = None
+            self._challenger_count = 0
+            return
+
+        if self._energy[raw_best] <= self._energy[self._locked] * self.SWITCH_MARGIN:
+            self._challenger = None
+            self._challenger_count = 0
+            return
+
+        if raw_best == self._challenger:
+            self._challenger_count += 1
+        else:
+            self._challenger = raw_best
+            self._challenger_count = 1
+
+        if self._challenger_count >= self.SWITCH_HOLD_WINDOWS:
+            self._locked = raw_best
+            self._challenger = None
+            self._challenger_count = 0
 
 
 class ToneGate:

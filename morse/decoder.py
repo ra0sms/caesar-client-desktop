@@ -252,6 +252,11 @@ class MorseDecoder(QObject):
         if ms < min(self._unit_est_ms * MIN_MARK_FRACTION, MIN_GLITCH_ABS_MS):
             self._last_mark_ms = None  # glitch — drop
             return
+        # A real mark confirms we've found the wanted signal — stop
+        # re-electing the dominant bin so a competing station or noise
+        # burst during the next gap can't steal the lock (see
+        # ToneBank.freeze).
+        self._bank.freeze()
         self._push_unit_candidate(ms)
         self._last_mark_ms = ms
 
@@ -308,6 +313,9 @@ class MorseDecoder(QObject):
         self._units.clear()
         self._unit_est_ms = DEFAULT_UNIT_MS
         self._emit_space_ok = False
+        # Transmission is over — allow the next one to re-acquire its own
+        # tone (it may come from a different station).
+        self._bank.unfreeze()
 
     def _set_status(self, active: bool) -> None:
         wpm = int(round(1200.0 / self._unit_est_ms)) if self._unit_est_ms > 0 else 0
