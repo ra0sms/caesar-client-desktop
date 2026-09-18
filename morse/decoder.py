@@ -255,7 +255,10 @@ class MorseDecoder(QObject):
         # A real mark confirms we've found the wanted signal — stop
         # re-electing the dominant bin so a competing station or noise
         # burst during the next gap can't steal the lock (see
-        # ToneBank.freeze).
+        # ToneBank.freeze). Tested against delaying this to the first
+        # full character instead: that gave the bin-lock hysteresis more
+        # exposure to the competing signal's own gaps and made QRM lock
+        # onto the wrong station more often, not less.
         self._bank.freeze()
         self._push_unit_candidate(ms)
         self._last_mark_ms = ms

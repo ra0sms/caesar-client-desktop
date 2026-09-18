@@ -212,16 +212,6 @@ class ToneGate:
         self.is_open = False
 
     def process(self, mag):
-        if not self.is_open or mag < self.floor * 1.5:
-            # idle — follow the noise floor down quickly
-            self.floor = (1.0 - self.attack) * self.floor + self.attack * mag
-        else:
-            # signal present — let the floor drift up very slowly
-            self.floor *= 1.0 + self.release
-
-        if self.floor < self.min_floor:
-            self.floor = self.min_floor
-
         # peak with fast attack / slow decay (hang time): keeps the
         # threshold up across quiet gaps (e.g. Opus digital silence)
         if mag > self.peak:
@@ -229,6 +219,16 @@ class ToneGate:
         else:
             self.peak *= 1.0 - self.peak_release
 
+        # Decide open/close against the floor as it stood BEFORE this
+        # window, then update the floor afterwards. Doing it the other
+        # way round — updating the floor toward `mag` first and testing
+        # against the already-nudged value — lets a weak-but-real signal
+        # get partly absorbed into its own floor on the very window that
+        # should have opened the gate for it. That shrinks the margin,
+        # which fails to open, which lets the floor rise a bit more next
+        # window, and so on: a runaway feedback loop that permanently
+        # locks the gate shut for any signal not loud enough to clear
+        # the threshold outright on window one.
         thr_open = max(
             self.floor * 10.0 ** (self.open_db / 20.0),
             self.peak * self.hold_fraction,
@@ -244,6 +244,17 @@ class ToneGate:
         else:
             if mag > thr_open:
                 self.is_open = True
+
+        if not self.is_open or mag < self.floor * 1.5:
+            # idle — follow the noise floor down quickly
+            self.floor = (1.0 - self.attack) * self.floor + self.attack * mag
+        else:
+            # signal present — let the floor drift up very slowly
+            self.floor *= 1.0 + self.release
+
+        if self.floor < self.min_floor:
+            self.floor = self.min_floor
+
         return self.is_open
 
     def level_db(self, mag):
