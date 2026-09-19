@@ -198,7 +198,7 @@ class ToneGate:
         release=0.0005,
         min_floor=2.0,
         hold_fraction=0.12,
-        peak_release=0.006,
+        peak_release=0.15,
     ):
         self.open_db = open_db
         self.close_db = close_db
@@ -206,7 +206,17 @@ class ToneGate:
         self.release = release     # slow upward drift while signal present
         self.min_floor = min_floor
         self.hold_fraction = hold_fraction  # threshold hold relative to peak
-        self.peak_release = peak_release    # peak decay per window (hang time)
+        # Peak decay per window (~23ms half-life). Fast enough that a
+        # real HF fade (QSB) is mostly forgotten within a couple of
+        # elements, so the gate can re-open for the new, genuinely
+        # weaker level instead of staying keyed to how loud the signal
+        # used to be — but still slow enough to bridge a brief
+        # within-element codec/encoder dropout and to resist noise
+        # right after a real mark. A much faster decay (or dropping
+        # peak from the open threshold entirely) recovers from QSB
+        # quicker still, but was measured to make the decoder noticeably
+        # less noise-robust on ordinary, non-fading signals.
+        self.peak_release = peak_release
         self.floor = 0.0
         self.peak = 0.0
         self.is_open = False
