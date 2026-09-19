@@ -70,6 +70,20 @@ class ToneBank:
     SWITCH_MARGIN = 1.6
     SWITCH_HOLD_WINDOWS = 4
 
+    # Safety valve for the freeze below: a brief noise click (atmospheric
+    # static, ignition/RFI, contact bounce — all common on real HF audio
+    # and easily 20-100ms long) can itself pass as a legitimate mark and
+    # freeze the lock onto pure noise *before* the wanted signal even
+    # starts, which would otherwise strand the tracker there — silently
+    # dropping the entire, however loud, transmission that follows —
+    # until a full 3-second silence reset. Even while frozen, a
+    # candidate that is overwhelmingly stronger (not just comparably
+    # louder, which is what a same-strength QRM station would be) for a
+    # much longer stretch than the normal hysteresis is allowed to break
+    # the freeze and take over.
+    OVERRIDE_MARGIN = 3.0
+    OVERRIDE_HOLD_WINDOWS = 100  # ~500ms
+
     def __init__(self, sample_rate=SAMPLE_RATE, window_size=80, manual_tone=0.0):
         self.sample_rate = sample_rate
         self.window = window_size
@@ -88,6 +102,8 @@ class ToneBank:
         self._locked = 0
         self._challenger = None
         self._challenger_count = 0
+        self._override_challenger = None
+        self._override_count = 0
         self._frozen = False
 
     def freeze(self) -> None:
@@ -105,6 +121,8 @@ class ToneBank:
         self._frozen = False
         self._challenger = None
         self._challenger_count = 0
+        self._override_challenger = None
+        self._override_count = 0
 
     def _add_bin(self, freq: float) -> None:
         n = self.window
@@ -156,6 +174,7 @@ class ToneBank:
         """Only let ``raw_best`` take over the locked bin after it has
         led by ``SWITCH_MARGIN`` for ``SWITCH_HOLD_WINDOWS`` in a row."""
         if self._frozen:
+            self._track_override(raw_best)
             return
 
         if raw_best == self._locked:
@@ -176,6 +195,34 @@ class ToneBank:
 
         if self._challenger_count >= self.SWITCH_HOLD_WINDOWS:
             self._locked = raw_best
+            self._challenger = None
+            self._challenger_count = 0
+
+    def _track_override(self, raw_best: int) -> None:
+        """While frozen, only let a hugely and persistently stronger
+        bin break the lock (see ``OVERRIDE_MARGIN``/``OVERRIDE_HOLD_WINDOWS``
+        above). Stays frozen afterwards — this just corrects a bad lock,
+        it doesn't reopen the door to normal QRM-driven hopping."""
+        if raw_best == self._locked:
+            self._override_challenger = None
+            self._override_count = 0
+            return
+
+        if self._energy[raw_best] <= self._energy[self._locked] * self.OVERRIDE_MARGIN:
+            self._override_challenger = None
+            self._override_count = 0
+            return
+
+        if raw_best == self._override_challenger:
+            self._override_count += 1
+        else:
+            self._override_challenger = raw_best
+            self._override_count = 1
+
+        if self._override_count >= self.OVERRIDE_HOLD_WINDOWS:
+            self._locked = raw_best
+            self._override_challenger = None
+            self._override_count = 0
             self._challenger = None
             self._challenger_count = 0
 
