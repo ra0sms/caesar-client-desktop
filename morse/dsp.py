@@ -237,32 +237,6 @@ class ToneGate:
     short CW elements and gaps are preserved.
     """
 
-    # Escape hatch for the peak-based hold below: on a strong signal with
-    # real (not synthetic-silent) background noise, `peak` can sit so far
-    # above the true noise floor that its hold_fraction-scaled threshold
-    # takes many windows to decay back down — long enough to outlast a
-    # genuine short inter-element gap, since every new element re-arms
-    # `peak` to full strength before the previous decay finishes. The
-    # result is several real dots/dashes fused into one long "mark" that
-    # gets misclassified as garbage, with the tracked tone's own gaps
-    # never actually reaching the debounced closed state. If several
-    # consecutive windows read unambiguously close to the (independently,
-    # slowly tracked) floor, that is strong direct evidence of a real gap
-    # regardless of what the decaying peak says, so it closes the gate
-    # even while the hold would otherwise still be holding it open.
-    #
-    # Only armed once `peak` clears an absolute level (not a ratio over
-    # `floor`): early in acquisition `floor` is still near `min_floor`
-    # and hasn't caught up yet, so a peak/floor *ratio* looks "strong"
-    # for practically any signal during that warm-up window, which was
-    # observed to misfire mid-character on ordinary, moderate-strength
-    # signals (chopping a single dash into two elements on noise). An
-    # absolute floor sidesteps that: it only engages for genuinely loud
-    # signals, which is exactly the case this escape hatch targets.
-    QUIET_FLOOR_RATIO = 10.0
-    QUIET_STREAK_WINDOWS = 2
-    QUIET_STRONG_PEAK = 1500.0
-
     def __init__(
         self,
         open_db=12.0,
@@ -295,7 +269,6 @@ class ToneGate:
         self.is_open = False
         self.last_thr_open = 0.0
         self.last_thr_close = 0.0
-        self._quiet_streak = 0
 
     def process(self, mag):
         # peak with fast attack / slow decay (hang time): keeps the
@@ -328,17 +301,8 @@ class ToneGate:
         self.last_thr_open = thr_open
         self.last_thr_close = thr_close
 
-        # Independent evidence of a real gap: several windows in a row
-        # unambiguously near the floor, only trusted once the signal is
-        # clearly strong (see QUIET_STRONG_PEAK above).
-        quiet_thr = self.floor * self.QUIET_FLOOR_RATIO
-        if self.peak > self.QUIET_STRONG_PEAK and mag < quiet_thr:
-            self._quiet_streak += 1
-        else:
-            self._quiet_streak = 0
-
         if self.is_open:
-            if mag < thr_close or self._quiet_streak >= self.QUIET_STREAK_WINDOWS:
+            if mag < thr_close:
                 self.is_open = False
         else:
             if mag > thr_open:
