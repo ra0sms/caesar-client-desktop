@@ -50,6 +50,17 @@ WINDOW_MS = HOP_SAMPLES * 1000.0 / SAMPLE_RATE
 # Timing rules (relative to the estimated dot length)
 MIN_MARK_FRACTION = 0.35   # elements shorter than this are ignored (clicks)
 MIN_GLITCH_ABS_MS = 8.0    # absolute floor for the glitch filter
+# A real dash is at most 3 units; anything much longer than that cannot be
+# a legitimate CW element (e.g. a PTT/keying lead-in, or the gate briefly
+# failing to release on a held carrier) and would otherwise be classified
+# as one phantom dash glued onto whatever character follows it. Only
+# checked once the unit estimator has real data of its own (see
+# `_finish_mark`) — at the very start of a transmission, before any
+# element has been measured, there is no trustworthy speed to compare
+# against, so the absolute floor (the slowest speed this decoder
+# supports at all) is used instead.
+MAX_MARK_RATIO = 6.0
+MAX_MARK_COLD_START_MS = 1800.0  # 3 units at the slowest supported speed
 # Marks measure ~1 window longer, gaps ~1 window shorter than reality,
 # so the dot/dash threshold sits above the measured dot-to-gap ratio.
 DOT_DASH_RATIO = 2.6       # elements longer than this are dashes
@@ -294,6 +305,16 @@ class MorseDecoder(QObject):
             self._last_mark_ms = None  # glitch — drop
             if self._debug_log:
                 self._debug(0.0, f"mark_dropped_glitch({ms:.1f}ms)")
+            return
+        max_valid = (
+            self._unit_est_ms * MAX_MARK_RATIO
+            if self._units
+            else MAX_MARK_COLD_START_MS
+        )
+        if ms > max_valid:
+            self._last_mark_ms = None  # anomaly — drop, don't corrupt symbols
+            if self._debug_log:
+                self._debug(0.0, f"mark_dropped_anomaly({ms:.1f}ms)")
             return
         # A real mark confirms we've found the wanted signal — stop
         # re-electing the dominant bin so a competing station or noise
