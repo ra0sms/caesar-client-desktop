@@ -267,6 +267,8 @@ class ToneGate:
         self.floor = 0.0
         self.peak = 0.0
         self.is_open = False
+        self.last_thr_open = 0.0
+        self.last_thr_close = 0.0
 
     def process(self, mag):
         # peak with fast attack / slow decay (hang time): keeps the
@@ -294,6 +296,10 @@ class ToneGate:
             self.floor * 10.0 ** (self.close_db / 20.0),
             self.peak * self.hold_fraction * 0.5,
         )
+
+        # Exposed for diagnostics (see morse/decoder.py's debug logging).
+        self.last_thr_open = thr_open
+        self.last_thr_close = thr_close
 
         if self.is_open:
             if mag < thr_close:

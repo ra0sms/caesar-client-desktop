@@ -23,13 +23,24 @@ unit estimate (no cold-start errors).
 """
 
 import array
+import os
 import threading
+import time
 from collections import deque
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from morse.dsp import SAMPLE_RATE, ToneBank, ToneGate
 from morse.table import MORSE_CODE
+
+# Optional per-window diagnostic trace. Set this environment variable to
+# a file path before starting the app to capture exactly what the gate
+# and tone tracker are doing on real audio — mag/floor/peak/thresholds
+# for every 5ms window, plus a note on every glitch dropped, mark
+# classified, or character/space emitted. Meant for tracking down
+# decode problems that don't reproduce with synthetic test tones; has
+# no effect at all unless the variable is set.
+DEBUG_LOG_PATH = os.environ.get("CAESAR_MORSE_DEBUG")
 
 # Processing window: 5 ms @ 8 kHz (finer = better timing at high WPM)
 INTEG_SAMPLES = 40
@@ -97,6 +108,34 @@ class MorseDecoder(QObject):
 
         self._status_active = False
         self._wpm = 0
+
+        self._debug_log = None
+        self._debug_t0 = None
+        if DEBUG_LOG_PATH:
+            self._debug_log = open(DEBUG_LOG_PATH, "a", buffering=1)
+            self._debug_log.write(
+                "\n# --- new session ---\n"
+                "t_ms,mag,freq,floor,peak,thr_open,thr_close,is_open,"
+                "in_mark,mark_ms,space_ms,unit_est_ms,event\n"
+            )
+
+    def _debug(self, mag: float, event: str = "") -> None:
+        if not self._debug_log:
+            return
+        now = time.monotonic()
+        if self._debug_t0 is None:
+            self._debug_t0 = now
+        g = self._gate
+        self._debug_log.write(
+            f"{(now - self._debug_t0) * 1000.0:.1f},"
+            f"{mag:.2f},"
+            f"{self._bank.dominant_freq:.0f},"
+            f"{g.floor:.2f},{g.peak:.2f},"
+            f"{g.last_thr_open:.2f},{g.last_thr_close:.2f},"
+            f"{int(g.is_open)},{int(self._in_mark)},"
+            f"{self._mark_ms:.1f},{self._space_ms:.1f},"
+            f"{self._unit_est_ms:.1f},{event}\n"
+        )
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -184,6 +223,8 @@ class MorseDecoder(QObject):
             self.tone_detected.emit(int(round(freq)))
 
         on = self._gate.process(mag)
+        if self._debug_log:
+            self._debug(mag)
         self._advance(on)
 
     def _advance(self, signal_on: bool) -> None:
@@ -251,6 +292,8 @@ class MorseDecoder(QObject):
         ms = self._mark_ms
         if ms < min(self._unit_est_ms * MIN_MARK_FRACTION, MIN_GLITCH_ABS_MS):
             self._last_mark_ms = None  # glitch — drop
+            if self._debug_log:
+                self._debug(0.0, f"mark_dropped_glitch({ms:.1f}ms)")
             return
         # A real mark confirms we've found the wanted signal — stop
         # re-electing the dominant bin so a competing station or noise
@@ -293,11 +336,15 @@ class MorseDecoder(QObject):
             self._symbols += "."
         else:
             self._symbols += "-"
+        if self._debug_log:
+            self._debug(0.0, f"classified({ms:.1f}ms->{self._symbols[-1]})")
 
     def _emit_char(self) -> bool:
         if not self._symbols:
             return False
         ch = MORSE_CODE.get(self._symbols, "?")
+        if self._debug_log:
+            self._debug(0.0, f"emit_char({self._symbols}->{ch!r})")
         self._symbols = ""
         self._emit_space_ok = True
         self.text_decoded.emit(ch)
