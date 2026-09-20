@@ -124,6 +124,7 @@ class MorseDecoder(QObject):
         self._raw_count = 0
 
         self._pending = bytearray()
+        self._reported_process_error = False
 
         self._recording = False        # currently buffering a transmission
         self._silence_ms = 0.0
@@ -212,7 +213,20 @@ class MorseDecoder(QObject):
         while len(self._pending) >= INTEG_SAMPLES * 2:
             chunk = bytes(self._pending[: INTEG_SAMPLES * 2])
             del self._pending[: HOP_SAMPLES * 2]
-            self._process_window(chunk)
+            try:
+                self._process_window(chunk)
+            except Exception:
+                # The RX reader thread that calls feed_pcm() swallows any
+                # exception raised here (so a decoder bug can't take down
+                # audio playback) — which also means one would otherwise
+                # vanish without a trace. Report it once so it's not
+                # mistaken for "nothing was received".
+                if not self._reported_process_error:
+                    self._reported_process_error = True
+                    import traceback
+
+                    print("[morse] window processing failed:", file=sys.stderr)
+                    traceback.print_exc()
         if len(self._pending) > MAX_PENDING_BYTES:
             del self._pending[: len(self._pending) - MAX_PENDING_BYTES]
 
@@ -220,6 +234,7 @@ class MorseDecoder(QObject):
 
     def _reset(self) -> None:
         self._pending.clear()
+        self._reported_process_error = False
         self._bank = ToneBank(
             window_size=INTEG_SAMPLES, manual_tone=self._tone_hz
         )
