@@ -35,6 +35,7 @@ Threading contract:
 
 import array
 import os
+import sys
 import threading
 import time
 
@@ -352,5 +353,13 @@ class MorseDecoder(QObject):
                 tone = detect_tone(samples, SAMPLE_RATE, lo=250, hi=1700)
             text = self._pycw_decoder.decode(samples, SAMPLE_RATE, tone=tone)
         except Exception:
+            # Surfaced instead of silently swallowed: a missing/broken
+            # pycw install must not look identical to "nothing was said".
+            import traceback
+
+            print("[morse] pycw decode failed:", file=sys.stderr)
+            traceback.print_exc()
+            if self._debug_log:
+                self._debug(0.0, f"decode_error({traceback.format_exc()!r})")
             return ""
         return text.strip().upper()
