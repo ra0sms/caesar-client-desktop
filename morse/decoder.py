@@ -67,7 +67,20 @@ STATUS_LED_HOLD_MS = 300.0    # activity LED stays lit across short gaps
 # down to ~4.7 WPM with margin, well below any speed this app's own
 # tests exercise (8-40 WPM).
 END_OF_TX_MS = 1800.0
-MAX_UTTERANCE_S = 180.0       # safety cap: force a decode after this long
+MAX_UTTERANCE_S = 30.0        # force a decode after this long even mid-tone
+# Was originally 180s. A real capture showed the gate staying "open"
+# continuously for 29 seconds (unrelated to Morse timing — something
+# upstream, outside this decoder, kept feeding it activity well after
+# the operator said they had stopped keying), which then went to pycw
+# as one giant buffer and came back as an unreadable wall of garbage.
+# Splitting on a shorter, fixed ceiling bounds the worst case: at worst
+# it cuts one long transmission into a couple of chunks (which pycw
+# each still decodes on its own merits) instead of accumulating an
+# ever-growing blob that gets harder to decode the longer it runs. 30s
+# is chosen to clear this app's own slowest tested speed (8 WPM, ~24s
+# for the self-test's message) with room to spare — a tighter cap would
+# start splitting ordinary slow-speed messages mid-word (confirmed by
+# testing: 12s cut the 8-12 WPM self-test cases into garbled fragments).
 MIN_UTTERANCE_MS = 40.0       # shorter than this can't be a real element
 MAX_PENDING_BYTES = 65536     # safety cap for the leftover-sample buffer
 # An unbroken tone this long before the very first real gap cannot be a
