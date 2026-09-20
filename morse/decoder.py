@@ -160,7 +160,18 @@ class MorseDecoder(QObject):
 
         self._debug_log = None
         self._debug_t0 = None
+        self._debug_pcm = None
         if DEBUG_LOG_PATH:
+            # Raw PCM alongside the CSV trace: derived threshold metrics
+            # weren't enough to explain a real-world failure that no
+            # synthetic reproduction (including through the real Opus
+            # codec, with jitter and noise) could match — only the actual
+            # audio can settle that. Plain headerless 8 kHz mono S16LE (no
+            # WAV header, since that requires a clean close() to finalize
+            # and this file is appended to for the life of the process);
+            # convert with e.g. `sox -r 8000 -e signed -b 16 -c 1
+            # <path>.pcm out.wav` to listen to it.
+            self._debug_pcm = open(DEBUG_LOG_PATH + ".pcm", "ab")
             self._debug_log = open(DEBUG_LOG_PATH, "a", buffering=1)
             self._debug_log.write(
                 "\n# --- new session ---\n"
@@ -228,6 +239,8 @@ class MorseDecoder(QObject):
         """Feed a chunk of 8 kHz mono S16LE PCM (any size)."""
         if not self._enabled:
             return
+        if self._debug_pcm:
+            self._debug_pcm.write(data)
         self._pending.extend(data)
         # consume HOP_SAMPLES per step, evaluating INTEG_SAMPLES from the
         # head of the buffer (INTEG == HOP: no overlap)
