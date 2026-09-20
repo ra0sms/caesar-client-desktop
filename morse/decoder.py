@@ -58,7 +58,15 @@ HOP_SAMPLES = 40
 WINDOW_MS = HOP_SAMPLES * 1000.0 / SAMPLE_RATE
 
 STATUS_LED_HOLD_MS = 300.0    # activity LED stays lit across short gaps
-END_OF_TX_MS = 3000.0         # silence longer than this ends a transmission
+# Silence longer than this ends a transmission and triggers the decode.
+# In the old live-streaming decoder this delay only affected when the
+# trailing newline appeared — already-decoded characters were visible
+# immediately. Now it gates when *any* text appears at all, so it needs
+# to be short enough to feel responsive while still comfortably longer
+# than a real inter-word gap (7 units) at plausible speeds — 1.8s covers
+# down to ~4.7 WPM with margin, well below any speed this app's own
+# tests exercise (8-40 WPM).
+END_OF_TX_MS = 1800.0
 MAX_UTTERANCE_S = 180.0       # safety cap: force a decode after this long
 MIN_UTTERANCE_MS = 40.0       # shorter than this can't be a real element
 MAX_PENDING_BYTES = 65536     # safety cap for the leftover-sample buffer
