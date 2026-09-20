@@ -2,87 +2,106 @@
 
 Consumes 8 kHz mono S16LE PCM (produced by the RX audio tap branch in
 ``audio/rx.py``) and emits decoded characters / status updates via Qt
-signals. All DSP is pure Python and deliberately cheap (tens of
-thousands of operations per second), so it can safely run inside the
-audio reader thread without disturbing the rest of the application.
+signals.
+
+Decoding strategy
+------------------
+A lightweight tone-presence gate (``ToneBank`` + ``ToneGate``, see
+``morse/dsp.py``) tracks the CW passband purely to answer two coarse
+questions in real time: "is a signal present right now" (drives the
+activity LED) and "has it been quiet long enough that this transmission
+is over" (drives when to hand the audio off for decoding). It does not
+attempt to time individual dots, dashes, or gaps itself any more.
+
+The actual character decoding is delegated to ``pycw``'s numpy-only
+model, which analyzes each complete transmission's raw audio as a
+whole (Otsu-style level separation over the whole buffer, not a
+per-5ms-window adaptive threshold). Months of tuning a live per-window
+Schmitt trigger for real HF conditions (weak signals, strong signals
+with realistic background noise, PTT lead-in artifacts) kept trading
+one failure mode for another; batch analysis of the complete waveform
+sidesteps that entirely, at the cost of only emitting text once a
+transmission ends rather than character-by-character while it's still
+being received.
 
 Threading contract:
   * ``feed_pcm()`` is called from the RX reader thread (producer);
+  * ``pycw`` decoding runs synchronously on that same thread once a
+    transmission ends (measured well under 1 second even for several
+    minutes of audio, so this does not stall the audio pipeline);
   * signals are emitted from that same thread; PyQt delivers them to
     the GUI thread through queued connections.
-
-Timing strategy
----------------
-The dot length is estimated adaptively from the durations of both marks
-and spaces (dots and intra-character gaps are both one unit long). The
-estimate is the lower-quartile of the recent candidates, which is
-robust against glitches and adapts when the operator changes speed.
-Symbol classification is delayed by one element, so the very first
-elements of a transmission are classified with an already-converged
-unit estimate (no cold-start errors).
 """
 
 import array
 import os
 import threading
 import time
-from collections import deque
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from morse.dsp import SAMPLE_RATE, ToneBank, ToneGate
-from morse.table import MORSE_CODE
+from morse.table import CHAR_TO_MORSE
 
 # Optional per-window diagnostic trace. Set this environment variable to
-# a file path before starting the app to capture exactly what the gate
-# and tone tracker are doing on real audio — mag/floor/peak/thresholds
-# for every 5ms window, plus a note on every glitch dropped, mark
-# classified, or character/space emitted. Meant for tracking down
-# decode problems that don't reproduce with synthetic test tones; has
-# no effect at all unless the variable is set.
+# a file path before starting the app to capture what the presence gate
+# is doing on real audio — mag/floor/peak/thresholds for every 5ms
+# window, plus a note whenever a transmission starts or gets handed off
+# for decoding. Meant for tracking down segmentation problems that don't
+# reproduce with synthetic test tones; has no effect unless set.
 DEBUG_LOG_PATH = os.environ.get("CAESAR_MORSE_DEBUG")
 
-# Processing window: 5 ms @ 8 kHz (finer = better timing at high WPM)
+# Processing window: 5 ms @ 8 kHz
 INTEG_SAMPLES = 40
 HOP_SAMPLES = 40
 WINDOW_MS = HOP_SAMPLES * 1000.0 / SAMPLE_RATE
 
-# Timing rules (relative to the estimated dot length)
-MIN_MARK_FRACTION = 0.35   # elements shorter than this are ignored (clicks)
-MIN_GLITCH_ABS_MS = 8.0    # absolute floor for the glitch filter
-# A real dash is at most 3 units; anything much longer than that cannot be
-# a legitimate CW element (e.g. a PTT/keying lead-in, or the gate briefly
-# failing to release on a held carrier) and would otherwise be classified
-# as one phantom dash glued onto whatever character follows it. Only
-# checked once the unit estimator has real data of its own (see
-# `_finish_mark`) — at the very start of a transmission, before any
-# element has been measured, there is no trustworthy speed to compare
-# against, so the absolute floor (the slowest speed this decoder
-# supports at all) is used instead.
-MAX_MARK_RATIO = 6.0
-MAX_MARK_COLD_START_MS = 1800.0  # 3 units at the slowest supported speed
-# Marks measure ~1 window longer, gaps ~1 window shorter than reality,
-# so the dot/dash threshold sits above the measured dot-to-gap ratio.
-DOT_DASH_RATIO = 2.6       # elements longer than this are dashes
-CHAR_GAP_DOTS = 2.0        # gap after which a character is finalized
-WORD_GAP_DOTS = 5.0        # gap after which a space is emitted
-CHAR_GAP_FEED_RATIO = 2.5  # only shorter gaps feed the unit estimator
-END_OF_TX_MS = 3000.0      # silence longer than this => end of transmission
+STATUS_LED_HOLD_MS = 300.0    # activity LED stays lit across short gaps
+END_OF_TX_MS = 3000.0         # silence longer than this ends a transmission
+MAX_UTTERANCE_S = 180.0       # safety cap: force a decode after this long
+MIN_UTTERANCE_MS = 40.0       # shorter than this can't be a real element
+MAX_PENDING_BYTES = 65536     # safety cap for the leftover-sample buffer
+# An unbroken tone this long before the very first real gap cannot be a
+# legitimate first CW element (even 2 WPM's slowest dash is under 2s) —
+# it's most likely a PTT/keying lead-in artifact. Audio recorded before
+# that first gap is dropped rather than handed to pycw, which otherwise
+# reads it as one long, phantom leading dash.
+MAX_LEAD_ON_MS = 2000.0
 
-# Unit (dot) length estimation guards
-UNIT_MIN_MS = 12.0         # ~100 WPM
-UNIT_MAX_MS = 600.0        # ~2 WPM
-DEFAULT_UNIT_MS = 60.0     # ~20 WPM starting point
-UNITS_WINDOW = 16          # how many recent candidates feed the estimator
 
-STATUS_LED_HOLD_MS = 300.0  # activity LED stays lit across short gaps
-MAX_PENDING_BYTES = 65536   # safety cap for the leftover-sample buffer
+def _wpm_from_text(text: str, duration_ms: float) -> int:
+    """Rough WPM estimate from decoded text and the transmission's audio
+    duration. Not exact (one wrong character skews it) — just enough for
+    a live readout: reconstructs the total dot-units the standard Morse
+    timing rules imply for this text, then divides the known duration by
+    that.
+    """
+    if not text or duration_ms <= 0:
+        return 0
+    units = 0.0
+    words = text.split(" ")
+    for wi, word in enumerate(words):
+        chars = [c for c in word if c in CHAR_TO_MORSE]
+        for ci, ch in enumerate(chars):
+            code = CHAR_TO_MORSE[ch]
+            for ei, elem in enumerate(code):
+                units += 3.0 if elem == "-" else 1.0
+                if ei < len(code) - 1:
+                    units += 1.0
+            if ci < len(chars) - 1:
+                units += 3.0
+        if wi < len(words) - 1:
+            units += 7.0
+    if units <= 0:
+        return 0
+    unit_ms = duration_ms / units
+    return int(round(1200.0 / unit_ms)) if unit_ms > 0 else 0
 
 
 class MorseDecoder(QObject):
-    """Decodes CW tones from raw PCM into text."""
+    """Detects CW transmissions and decodes each with pycw."""
 
-    # One decoded symbol / space / newline at a time
+    # Decoded text for one transmission at a time (plus a trailing "\n")
     text_decoded = pyqtSignal(str)
     # signal_active (activity LED), estimated WPM
     status_changed = pyqtSignal(bool, int)
@@ -105,20 +124,16 @@ class MorseDecoder(QObject):
 
         self._pending = bytearray()
 
-        self._in_mark = False
-        self._mark_ms = 0.0
-        self._space_ms = 0.0
-        self._symbols = ""
-        self._units = deque(maxlen=UNITS_WINDOW)
-        self._unit_est_ms = DEFAULT_UNIT_MS
-        self._last_mark_ms = None
-
-        self._got_mark = False
-        self._emit_space_ok = False
-        self._tx_ended = False
+        self._recording = False        # currently buffering a transmission
+        self._silence_ms = 0.0
+        self._utterance = bytearray()
+        self._lead_only = False        # no real gap seen yet this recording
+        self._lead_ms = 0.0
 
         self._status_active = False
         self._wpm = 0
+
+        self._pycw_decoder = None      # lazy: only built once actually used
 
         self._debug_log = None
         self._debug_t0 = None
@@ -127,7 +142,7 @@ class MorseDecoder(QObject):
             self._debug_log.write(
                 "\n# --- new session ---\n"
                 "t_ms,mag,freq,floor,peak,thr_open,thr_close,is_open,"
-                "in_mark,mark_ms,space_ms,unit_est_ms,event\n"
+                "recording,silence_ms,event\n"
             )
 
     def _debug(self, mag: float, event: str = "") -> None:
@@ -143,9 +158,8 @@ class MorseDecoder(QObject):
             f"{self._bank.dominant_freq:.0f},"
             f"{g.floor:.2f},{g.peak:.2f},"
             f"{g.last_thr_open:.2f},{g.last_thr_close:.2f},"
-            f"{int(g.is_open)},{int(self._in_mark)},"
-            f"{self._mark_ms:.1f},{self._space_ms:.1f},"
-            f"{self._unit_est_ms:.1f},{event}\n"
+            f"{int(g.is_open)},{int(self._recording)},"
+            f"{self._silence_ms:.1f},{event}\n"
         )
 
     # ── Public API ──────────────────────────────────────────────────
@@ -184,6 +198,8 @@ class MorseDecoder(QObject):
                 self.status_changed.emit(False, self._wpm)
             else:
                 self._pending.clear()
+                self._utterance.clear()
+                self._recording = False
 
     def feed_pcm(self, data: bytes) -> None:
         """Feed a chunk of 8 kHz mono S16LE PCM (any size)."""
@@ -209,16 +225,11 @@ class MorseDecoder(QObject):
         self._last_reported_tone = 0
         self._last_raw = False
         self._raw_count = 0
-        self._in_mark = False
-        self._mark_ms = 0.0
-        self._space_ms = 0.0
-        self._symbols = ""
-        self._units.clear()
-        self._unit_est_ms = DEFAULT_UNIT_MS
-        self._last_mark_ms = None
-        self._got_mark = False
-        self._emit_space_ok = False
-        self._tx_ended = False
+        self._recording = False
+        self._silence_ms = 0.0
+        self._utterance.clear()
+        self._lead_only = False
+        self._lead_ms = 0.0
         self._status_active = False
         self._wpm = 0
         self.status_changed.emit(False, 0)
@@ -233,164 +244,113 @@ class MorseDecoder(QObject):
             self._last_reported_tone = freq
             self.tone_detected.emit(int(round(freq)))
 
-        on = self._gate.process(mag)
+        raw_on = self._gate.process(mag)
         if self._debug_log:
             self._debug(mag)
-        self._advance(on)
+        self._advance(raw_on, chunk)
 
-    def _advance(self, signal_on: bool) -> None:
-        """Timing state machine with a 2-window debounce.
+    def _advance(self, raw_on: bool, chunk: bytes) -> None:
+        """Two-window debounce, then feed the transmission buffer.
 
-        State changes commit only after two consecutive identical gate
-        decisions, so single-window noise spikes cannot split elements or
-        create phantom marks. Both windows are credited to the new state,
-        which keeps the measured durations exact.
+        Precise per-element timing no longer matters here — that's
+        pycw's job, working from the raw waveform, so once a
+        transmission is being recorded every window's audio is kept
+        unconditionally (no gaps): only *starting* a fresh recording is
+        debounced, to avoid a single noise blip kicking one off.
         """
-        if signal_on == self._last_raw:
+        if raw_on == self._last_raw:
             self._raw_count += 1
         else:
-            self._last_raw = signal_on
+            self._last_raw = raw_on
             self._raw_count = 1
+        confirmed_on = self._raw_count >= 2 and self._last_raw
 
-        if self._raw_count < 2:
-            return  # decision not confirmed yet
-
-        committed = self._last_raw
-        if committed == self._in_mark:
-            # same state continues
-            if committed:
-                self._mark_ms += WINDOW_MS
+        if self._recording:
+            if confirmed_on:
+                self._silence_ms = 0.0
+                if self._lead_only:
+                    self._lead_ms += WINDOW_MS
+                    if self._lead_ms > MAX_LEAD_ON_MS:
+                        self._utterance.clear()  # drop the anomalous lead-in
+                        if self._debug_log:
+                            self._debug(0.0, "lead_in_discarded")
+                    else:
+                        self._utterance.extend(chunk)
+                else:
+                    self._utterance.extend(chunk)
+                if not self._status_active:
+                    self._status_active = True
+                    self.status_changed.emit(True, self._wpm)
             else:
-                self._space_ms += WINDOW_MS
-                if self._space_ms > END_OF_TX_MS and not self._tx_ended:
-                    self._end_of_tx()
-        else:
-            # transition: credit both debounce windows to the new state
-            if committed:
-                self._in_mark = True
-                self._tx_ended = False
-                self._finish_space()
-                self._mark_ms = 2 * WINDOW_MS
-            else:
-                self._in_mark = False
-                self._finish_mark()
-                self._space_ms = 2 * WINDOW_MS
-
-        # Activity LED: stays lit across short inter-element gaps
-        led = self._in_mark or self._space_ms <= STATUS_LED_HOLD_MS
-        self._set_status(led)
-
-    # ── Unit (dot length) estimation ────────────────────────────────
-
-    def _push_unit_candidate(self, ms: float) -> None:
-        if UNIT_MIN_MS <= ms <= UNIT_MAX_MS:
-            self._units.append(ms)
-            if len(self._units) < 2:
-                return  # not enough data yet
-            if len(self._units) < 4:
-                # cold start: the shortest element seen so far is the dot
-                self._unit_est_ms = min(self._units)
-            else:
-                # lower quartile: robust against dashes/gaps/glitches
-                s = sorted(self._units)
-                self._unit_est_ms = s[len(s) // 4]
-
-    # ── Element handling ────────────────────────────────────────────
-
-    def _finish_mark(self) -> None:
-        """A mark ended: feed the estimator, defer classification."""
-        self._got_mark = True
-        ms = self._mark_ms
-        if ms < min(self._unit_est_ms * MIN_MARK_FRACTION, MIN_GLITCH_ABS_MS):
-            self._last_mark_ms = None  # glitch — drop
+                self._lead_only = False  # a real gap: normal buffering now
+                self._utterance.extend(chunk)
+                self._silence_ms += WINDOW_MS
+                if self._status_active and self._silence_ms > STATUS_LED_HOLD_MS:
+                    self._status_active = False
+                    self.status_changed.emit(False, self._wpm)
+                if self._silence_ms > END_OF_TX_MS:
+                    self._flush_utterance()
+                    return
+            if len(self._utterance) > MAX_UTTERANCE_S * SAMPLE_RATE * 2:
+                self._flush_utterance()
+        elif confirmed_on:
+            self._recording = True
+            self._silence_ms = 0.0
+            self._lead_only = True
+            self._lead_ms = 0.0
+            self._utterance.clear()
+            self._utterance.extend(chunk)
             if self._debug_log:
-                self._debug(0.0, f"mark_dropped_glitch({ms:.1f}ms)")
-            return
-        max_valid = (
-            self._unit_est_ms * MAX_MARK_RATIO
-            if self._units
-            else MAX_MARK_COLD_START_MS
-        )
-        if ms > max_valid:
-            self._last_mark_ms = None  # anomaly — drop, don't corrupt symbols
+                self._debug(0.0, "utterance_start")
+            if not self._status_active:
+                self._status_active = True
+                self.status_changed.emit(True, self._wpm)
+
+    def _flush_utterance(self) -> None:
+        pcm = bytes(self._utterance)
+        self._utterance.clear()
+        self._recording = False
+        self._silence_ms = 0.0
+
+        duration_ms = len(pcm) / 2.0 / SAMPLE_RATE * 1000.0
+        if duration_ms < MIN_UTTERANCE_MS:
             if self._debug_log:
-                self._debug(0.0, f"mark_dropped_anomaly({ms:.1f}ms)")
+                self._debug(0.0, f"utterance_dropped_short({duration_ms:.0f}ms)")
             return
-        # A real mark confirms we've found the wanted signal — stop
-        # re-electing the dominant bin so a competing station or noise
-        # burst during the next gap can't steal the lock (see
-        # ToneBank.freeze). Tested against delaying this to the first
-        # full character instead: that gave the bin-lock hysteresis more
-        # exposure to the competing signal's own gaps and made QRM lock
-        # onto the wrong station more often, not less.
-        self._bank.freeze()
-        self._push_unit_candidate(ms)
-        self._last_mark_ms = ms
 
-    def _finish_space(self) -> None:
-        """A space ended (next mark started): classify, maybe emit."""
-        ms = self._space_ms
-        prev = self._unit_est_ms
-        drop_thr = min(prev * MIN_MARK_FRACTION, MIN_GLITCH_ABS_MS)
-        # only intra-character-ish gaps feed the unit estimator; long
-        # char/word gaps would otherwise inflate the estimate
-        if ms >= drop_thr and ms <= CHAR_GAP_FEED_RATIO * prev:
-            self._push_unit_candidate(ms)
-
-        # classify the mark that ended just before this gap — the unit
-        # estimate now already includes that mark and this gap
-        if self._last_mark_ms is not None:
-            self._classify_mark(self._last_mark_ms)
-            self._last_mark_ms = None
-
-        unit = self._unit_est_ms
-        if ms >= WORD_GAP_DOTS * unit:
-            self._emit_char()
-            if self._emit_space_ok:
-                self.text_decoded.emit(" ")
-                self._emit_space_ok = False
-        elif ms >= CHAR_GAP_DOTS * unit:
-            self._emit_char()
-
-    def _classify_mark(self, ms: float) -> None:
-        if ms <= self._unit_est_ms * DOT_DASH_RATIO:
-            self._symbols += "."
-        else:
-            self._symbols += "-"
+        text = self._decode_utterance(pcm)
         if self._debug_log:
-            self._debug(0.0, f"classified({ms:.1f}ms->{self._symbols[-1]})")
-
-    def _emit_char(self) -> bool:
-        if not self._symbols:
-            return False
-        ch = MORSE_CODE.get(self._symbols, "?")
-        if self._debug_log:
-            self._debug(0.0, f"emit_char({self._symbols}->{ch!r})")
-        self._symbols = ""
-        self._emit_space_ok = True
-        self.text_decoded.emit(ch)
-        return True
-
-    def _end_of_tx(self) -> None:
-        self._tx_ended = True
-        if self._last_mark_ms is not None:
-            self._classify_mark(self._last_mark_ms)
-            self._last_mark_ms = None
-        emitted = self._emit_char()
-        if self._got_mark or emitted:
+            self._debug(0.0, f"utterance_flush({duration_ms:.0f}ms->{text!r})")
+        if text:
+            self._wpm = _wpm_from_text(text, duration_ms)
+            self.status_changed.emit(False, self._wpm)
+            self.text_decoded.emit(text)
             self.text_decoded.emit("\n")
-        self._got_mark = False
-        self._symbols = ""
-        self._units.clear()
-        self._unit_est_ms = DEFAULT_UNIT_MS
-        self._emit_space_ok = False
-        # Transmission is over — allow the next one to re-acquire its own
-        # tone (it may come from a different station).
-        self._bank.unfreeze()
 
-    def _set_status(self, active: bool) -> None:
-        wpm = int(round(1200.0 / self._unit_est_ms)) if self._unit_est_ms > 0 else 0
-        if active != self._status_active or wpm != self._wpm:
-            self._status_active = active
-            self._wpm = wpm
-            self.status_changed.emit(active, wpm)
+    def _decode_utterance(self, pcm: bytes) -> str:
+        try:
+            import numpy as np
+            import pycw
+            from pycw.decoder.features import detect_tone
+
+            if self._pycw_decoder is None:
+                self._pycw_decoder = pycw.Decoder()
+            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+            samples /= 32768.0
+            if self._tone_hz > 0:
+                tone = self._tone_hz
+            else:
+                # pycw's own auto-detect only searches 350-1700 Hz, which
+                # misses low CW tones some operators use (300-350 Hz is
+                # within this app's own passband); redo its own precise
+                # FFT-based search with that floor lowered, rather than
+                # feeding it a hint from our own coarse ~200 Hz-resolution
+                # tracker, which isn't precise enough for the coherent
+                # demodulation pycw's feature extraction does at whatever
+                # frequency it's given (an imprecise hint measurably
+                # corrupts the decode, confirmed by testing).
+                tone = detect_tone(samples, SAMPLE_RATE, lo=250, hi=1700)
+            text = self._pycw_decoder.decode(samples, SAMPLE_RATE, tone=tone)
+        except Exception:
+            return ""
+        return text.strip().upper()
