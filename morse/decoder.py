@@ -1,200 +1,142 @@
-"""Real-time Morse (CW) decoder.
+"""Real-time Morse (CW) decoder built on the DeepCW neural model.
 
 Consumes 8 kHz mono S16LE PCM (produced by the RX audio tap branch in
-``audio/rx.py``) and emits decoded characters / status updates via Qt
-signals.
+``audio/rx.py``) and emits decoded text / status updates via Qt signals.
 
 Decoding strategy
-------------------
-A lightweight tone-presence gate (``ToneBank`` + ``ToneGate``, see
-``morse/dsp.py``) tracks the CW passband purely to answer two coarse
-questions in real time: "is a signal present right now" (drives the
-activity LED) and "has it been quiet long enough that this transmission
-is over" (drives when to hand the audio off for decoding). It does not
-attempt to time individual dots, dashes, or gaps itself any more.
+-----------------
+This is a port of the streaming loop of the DeepCW web decoder
+(``useStreamingDecode.ts``) on top of the deepcw-engine model (see
+``morse/deepcw_engine.py``). Incoming audio accumulates in a pending
+buffer; after every second of new audio the whole pending buffer (up to
+the model's 20 s limit) is decoded again from scratch. Text is only
+committed once it can no longer change:
 
-The actual character decoding is delegated to ``pycw``'s numpy-only
-model, which analyzes each complete transmission's raw audio as a
-whole (Otsu-style level separation over the whole buffer, not a
-per-5ms-window adaptive threshold). Months of tuning a live per-window
-Schmitt trigger for real HF conditions (weak signals, strong signals
-with realistic background noise, PTT lead-in artifacts) kept trading
-one failure mode for another; batch analysis of the complete waveform
-sidesteps that entirely, at the cost of only emitting text once a
-transmission ends rather than character-by-character while it's still
-being received.
+  * up to the last word space that lies safely before the end of the
+    buffer (the tail may still hold a half-received character), or
+  * everything, once nothing has been decoded for a while at the end of
+    the buffer (the transmission paused or ended).
+
+Committed audio is dropped from the buffer, so each character is shown
+exactly once, typically 1.5-3 s after it was sent.
 
 Threading contract:
-  * ``feed_pcm()`` is called from the RX reader thread (producer);
-  * ``pycw`` decoding runs synchronously on that same thread once a
-    transmission ends (measured well under 1 second even for several
-    minutes of audio, so this does not stall the audio pipeline);
-  * signals are emitted from that same thread; PyQt delivers them to
-    the GUI thread through queued connections.
+  * ``feed_pcm()`` is called from the RX reader thread and only appends
+    to the buffer;
+  * model inference runs on a dedicated worker thread (or inline when
+    constructed with ``threaded=False``, used by the offline self-test);
+  * signals are emitted from that thread; PyQt delivers them to the GUI
+    thread through queued connections.
 """
 
-import array
 import os
 import sys
 import threading
 import time
+from typing import List, Optional
 
+import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from morse.dsp import SAMPLE_RATE, ToneBank, ToneGate
 from morse.table import CHAR_TO_MORSE
 
-# Optional per-window diagnostic trace. Set this environment variable to
-# a file path before starting the app to capture what the presence gate
-# is doing on real audio — mag/floor/peak/thresholds for every 5ms
-# window, plus a note whenever a transmission starts or gets handed off
-# for decoding. Meant for tracking down segmentation problems that don't
-# reproduce with synthetic test tones; has no effect unless set.
+SAMPLE_RATE = 8000
+
+ANALYSIS_STEP_S = 1.0     # re-decode after this much new audio
+MIN_PENDING_S = 2.0       # don't bother decoding less than this
+MAX_SEGMENT_S = 20.0      # longest window the engine model accepts
+TAIL_GUARD_S = 1.25       # the newest audio may hold a partial character
+MIN_CONFIRMED_S = 2.0     # never commit a sliver shorter than this
+TRAILING_QUIET_S = 1.5    # nothing decoded this long at the end: commit all
+CHAR_TAIL_S = 0.5         # keep this much audio after the last committed char
+END_OF_TX_S = 3.0         # no characters this long: end the line
+IDLE_KEEP_S = 3.0         # with nothing decoded, keep only this much audio
+LED_HOLD_S = 2.0          # activity LED stays lit this long after a character
+MAX_BUFFER_S = 60.0       # hard cap if inference ever falls behind
+CONFIRM_TOLERANCE_S = 0.25  # same character this close in the previous pass
+MAX_POSTPONE = 2          # passes to wait for an unconfirmed character
+
+# Optional diagnostic trace: set this environment variable to a file path
+# to log every analysis pass (and dump the raw PCM to <path>.pcm, headerless
+# 8 kHz mono S16LE, e.g. `sox -r 8000 -e signed -b 16 -c 1 <path>.pcm out.wav`).
 DEBUG_LOG_PATH = os.environ.get("CAESAR_MORSE_DEBUG")
 
-# Processing window: 5 ms @ 8 kHz
-INTEG_SAMPLES = 40
-HOP_SAMPLES = 40
-WINDOW_MS = HOP_SAMPLES * 1000.0 / SAMPLE_RATE
 
-STATUS_LED_HOLD_MS = 300.0    # activity LED stays lit across short gaps
-# Silence longer than this ends a transmission and triggers the decode.
-# In the old live-streaming decoder this delay only affected when the
-# trailing newline appeared — already-decoded characters were visible
-# immediately. Now it gates when *any* text appears at all, so it needs
-# to be short enough to feel responsive while still comfortably longer
-# than a real inter-word gap (7 units) at plausible speeds — 1.8s covers
-# down to ~4.7 WPM with margin, well below any speed this app's own
-# tests exercise (8-40 WPM).
-END_OF_TX_MS = 1800.0
-MAX_UTTERANCE_S = 30.0        # force a decode after this long even mid-tone
-# Was originally 180s. A real capture showed the gate staying "open"
-# continuously for 29 seconds (unrelated to Morse timing — something
-# upstream, outside this decoder, kept feeding it activity well after
-# the operator said they had stopped keying), which then went to pycw
-# as one giant buffer and came back as an unreadable wall of garbage.
-# Splitting on a shorter, fixed ceiling bounds the worst case: at worst
-# it cuts one long transmission into a couple of chunks (which pycw
-# each still decodes on its own merits) instead of accumulating an
-# ever-growing blob that gets harder to decode the longer it runs. 30s
-# is chosen to clear this app's own slowest tested speed (8 WPM, ~24s
-# for the self-test's message) with room to spare — a tighter cap would
-# start splitting ordinary slow-speed messages mid-word (confirmed by
-# testing: 12s cut the 8-12 WPM self-test cases into garbled fragments).
-MIN_UTTERANCE_MS = 40.0       # shorter than this can't be a real element
-MAX_PENDING_BYTES = 65536     # safety cap for the leftover-sample buffer
-# An unbroken tone this long before the very first real gap cannot be a
-# legitimate first CW element (even 2 WPM's slowest dash is under 2s) —
-# it's most likely a PTT/keying lead-in artifact. Audio recorded before
-# that first gap is dropped rather than handed to pycw, which otherwise
-# reads it as one long, phantom leading dash.
-MAX_LEAD_ON_MS = 2000.0
+def _normalize(text: str) -> str:
+    return " ".join(text.split())
 
 
-def _wpm_from_text(text: str, duration_ms: float) -> int:
-    """Rough WPM estimate from decoded text and the transmission's audio
-    duration. Not exact (one wrong character skews it) — just enough for
-    a live readout: reconstructs the total dot-units the standard Morse
-    timing rules imply for this text, then divides the known duration by
-    that.
-    """
-    if not text or duration_ms <= 0:
-        return 0
+def _estimate_wpm(chars, frame_seconds: float) -> int:
+    """Speed from the spacing of committed characters (CTC fires near the
+    end of each character, so end-to-end distance covers every element
+    and gap after the first character)."""
     units = 0.0
-    words = text.split(" ")
-    for wi, word in enumerate(words):
-        chars = [c for c in word if c in CHAR_TO_MORSE]
-        for ci, ch in enumerate(chars):
-            code = CHAR_TO_MORSE[ch]
-            for ei, elem in enumerate(code):
-                units += 3.0 if elem == "-" else 1.0
-                if ei < len(code) - 1:
-                    units += 1.0
-            if ci < len(chars) - 1:
-                units += 3.0
-        if wi < len(words) - 1:
-            units += 7.0
-    if units <= 0:
+    first_end = last_end = None
+    word_gap = False
+    for span in chars:
+        if span.char == " ":
+            word_gap = True
+            continue
+        code = CHAR_TO_MORSE.get(span.char)
+        if not code:
+            continue
+        element_units = sum(3 if e == "-" else 1 for e in code) + len(code) - 1
+        if first_end is None:
+            first_end = span.end_frame
+        else:
+            units += (7 if word_gap else 3) + element_units
+            last_end = span.end_frame
+        word_gap = False
+    if last_end is None or units <= 0:
         return 0
-    unit_ms = duration_ms / units
-    return int(round(1200.0 / unit_ms)) if unit_ms > 0 else 0
+    duration_ms = (last_end - first_end) * frame_seconds * 1000.0
+    if duration_ms <= 0:
+        return 0
+    wpm = int(round(1200.0 / (duration_ms / units)))
+    return wpm if 3 <= wpm <= 80 else 0
 
 
 class MorseDecoder(QObject):
-    """Detects CW transmissions and decodes each with pycw."""
+    """Decodes CW from raw PCM into text with the DeepCW model."""
 
-    # Decoded text for one transmission at a time (plus a trailing "\n")
+    # Committed text, a word space between segments, "\n" at end of a line
     text_decoded = pyqtSignal(str)
     # signal_active (activity LED), estimated WPM
     status_changed = pyqtSignal(bool, int)
-    # dominant CW tone frequency detected (Hz); 0 = auto scan mode
+    # dominant CW tone frequency detected (Hz)
     tone_detected = pyqtSignal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, threaded: bool = True):
         super().__init__(parent)
-        self._lock = threading.Lock()
+        self._threaded = threaded
         self._enabled = False
+        self._tone_hz = 0.0            # 0 = automatic tone detection
 
-        self._tone_hz = 0.0            # 0 = automatic tone scanning
-        self._bank = ToneBank(window_size=INTEG_SAMPLES)
-        self._gate = ToneGate()
-        self._last_reported_tone = 0
+        self._buf_lock = threading.Lock()
+        self._buffer = bytearray()
+        self._new_samples = 0
+        self._dropped_samples = 0      # stream position of buffer start
 
-        # debounce: state changes commit only after two identical windows
-        self._last_raw = False
-        self._raw_count = 0
+        self._step_lock = threading.Lock()
+        self._wake = threading.Condition()
+        self._worker: Optional[threading.Thread] = None
+        self._generation = 0           # bumped on every enable/disable
 
-        self._pending = bytearray()
-        self._reported_process_error = False
+        self._engine = None
+        self._engine_failed = False
 
-        self._recording = False        # currently buffering a transmission
-        self._silence_ms = 0.0
-        self._utterance = bytearray()
-        self._lead_only = False        # no real gap seen yet this recording
-        self._lead_ms = 0.0
-
-        self._status_active = False
-        self._wpm = 0
-
-        self._pycw_decoder = None      # lazy: only built once actually used
+        self._reset_state()
 
         self._debug_log = None
-        self._debug_t0 = None
         self._debug_pcm = None
+        self._debug_t0 = time.monotonic()
         if DEBUG_LOG_PATH:
-            # Raw PCM alongside the CSV trace: derived threshold metrics
-            # weren't enough to explain a real-world failure that no
-            # synthetic reproduction (including through the real Opus
-            # codec, with jitter and noise) could match — only the actual
-            # audio can settle that. Plain headerless 8 kHz mono S16LE (no
-            # WAV header, since that requires a clean close() to finalize
-            # and this file is appended to for the life of the process);
-            # convert with e.g. `sox -r 8000 -e signed -b 16 -c 1
-            # <path>.pcm out.wav` to listen to it.
             self._debug_pcm = open(DEBUG_LOG_PATH + ".pcm", "ab")
             self._debug_log = open(DEBUG_LOG_PATH, "a", buffering=1)
             self._debug_log.write(
                 "\n# --- new session ---\n"
-                "t_ms,mag,freq,floor,peak,thr_open,thr_close,is_open,"
-                "recording,silence_ms,event\n"
+                "t_ms,pending_s,tone_hz,decoded,committed,event\n"
             )
-
-    def _debug(self, mag: float, event: str = "") -> None:
-        if not self._debug_log:
-            return
-        now = time.monotonic()
-        if self._debug_t0 is None:
-            self._debug_t0 = now
-        g = self._gate
-        self._debug_log.write(
-            f"{(now - self._debug_t0) * 1000.0:.1f},"
-            f"{mag:.2f},"
-            f"{self._bank.dominant_freq:.0f},"
-            f"{g.floor:.2f},{g.peak:.2f},"
-            f"{g.last_thr_open:.2f},{g.last_thr_close:.2f},"
-            f"{int(g.is_open)},{int(self._recording)},"
-            f"{self._silence_ms:.1f},{event}\n"
-        )
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -208,32 +150,39 @@ class MorseDecoder(QObject):
 
     @property
     def detected_tone_hz(self) -> int:
-        """Currently tracked dominant tone in Hz (0 when no signal)."""
-        return int(round(self._bank.dominant_freq))
+        return int(round(self._detected_tone or 0.0))
 
     def set_tone(self, freq_hz) -> None:
-        """Pin the decoder to a fixed tone, or 0 to auto-scan the passband."""
+        """Pin the decoder to a fixed tone, or 0 for automatic detection."""
         freq = float(freq_hz or 0.0)
-        if freq < 0:
-            return
-        self._tone_hz = freq
-        self._bank = ToneBank(
-            window_size=INTEG_SAMPLES, manual_tone=freq if freq > 0 else 0.0
-        )
-        self._last_reported_tone = 0
+        if freq >= 0:
+            self._tone_hz = freq
 
     def set_enabled(self, enabled: bool) -> None:
-        with self._lock:
-            if enabled == self._enabled:
-                return
-            self._enabled = enabled
-            if enabled:
-                self._reset()
-                self.status_changed.emit(False, self._wpm)
-            else:
-                self._pending.clear()
-                self._utterance.clear()
-                self._recording = False
+        if enabled == self._enabled:
+            return
+        self._enabled = enabled
+        if enabled:
+            with self._buf_lock:
+                self._buffer.clear()
+                self._new_samples = 0
+                self._dropped_samples = 0
+            self._reset_state()
+            self.status_changed.emit(False, 0)
+            if self._threaded:
+                self._generation += 1
+                self._worker = threading.Thread(
+                    target=self._run, args=(self._generation,), daemon=True,
+                    name="morse-decoder",
+                )
+                self._worker.start()
+        else:
+            self._generation += 1
+            with self._wake:
+                self._wake.notify_all()
+            self._worker = None
+            with self._buf_lock:
+                self._buffer.clear()
 
     def feed_pcm(self, data: bytes) -> None:
         """Feed a chunk of 8 kHz mono S16LE PCM (any size)."""
@@ -241,174 +190,265 @@ class MorseDecoder(QObject):
             return
         if self._debug_pcm:
             self._debug_pcm.write(data)
-        self._pending.extend(data)
-        # consume HOP_SAMPLES per step, evaluating INTEG_SAMPLES from the
-        # head of the buffer (INTEG == HOP: no overlap)
-        while len(self._pending) >= INTEG_SAMPLES * 2:
-            chunk = bytes(self._pending[: INTEG_SAMPLES * 2])
-            del self._pending[: HOP_SAMPLES * 2]
-            try:
-                self._process_window(chunk)
-            except Exception:
-                # The RX reader thread that calls feed_pcm() swallows any
-                # exception raised here (so a decoder bug can't take down
-                # audio playback) — which also means one would otherwise
-                # vanish without a trace. Report it once so it's not
-                # mistaken for "nothing was received".
-                if not self._reported_process_error:
-                    self._reported_process_error = True
-                    import traceback
+        with self._buf_lock:
+            self._buffer.extend(data)
+            self._new_samples += len(data) // 2
+            overflow = len(self._buffer) - int(MAX_BUFFER_S * SAMPLE_RATE) * 2
+            if overflow > 0:
+                overflow -= overflow % 2
+                del self._buffer[:overflow]
+                self._dropped_samples += overflow // 2
+            due = self._new_samples >= ANALYSIS_STEP_S * SAMPLE_RATE
+        if not due:
+            return
+        if self._threaded:
+            with self._wake:
+                self._wake.notify()
+        else:
+            self._step()
 
-                    print("[morse] window processing failed:", file=sys.stderr)
-                    traceback.print_exc()
-        if len(self._pending) > MAX_PENDING_BYTES:
-            del self._pending[: len(self._pending) - MAX_PENDING_BYTES]
+    def flush(self) -> None:
+        """Decode and commit everything still pending (end of stream)."""
+        if self._enabled:
+            self._step(final=True)
 
     # ── Internals ───────────────────────────────────────────────────
 
-    def _reset(self) -> None:
-        self._pending.clear()
-        self._reported_process_error = False
-        self._bank = ToneBank(
-            window_size=INTEG_SAMPLES, manual_tone=self._tone_hz
-        )
-        self._last_reported_tone = 0
-        self._last_raw = False
-        self._raw_count = 0
-        self._recording = False
-        self._silence_ms = 0.0
-        self._utterance.clear()
-        self._lead_only = False
-        self._lead_ms = 0.0
+    def _reset_state(self) -> None:
+        self._detected_tone: Optional[float] = None
+        self._need_space = False
+        self._line_open = False
+        self._last_char_pos = 0        # stream position (samples)
         self._status_active = False
         self._wpm = 0
-        self.status_changed.emit(False, 0)
+        self._prev_chars = []          # (char, stream time) from the last pass
+        self._postponed = 0
 
-    def _process_window(self, chunk: bytes) -> None:
-        raw = array.array("h")
-        raw.frombytes(chunk)
-        mag, freq = self._bank.process(raw)
+    def _seen_before(self, char: str, at_s: float) -> bool:
+        return any(
+            c == char and abs(t - at_s) <= CONFIRM_TOLERANCE_S for c, t in self._prev_chars
+        )
 
-        # report the tracked tone only when it moves meaningfully
-        if abs(freq - self._last_reported_tone) >= 100.0:
-            self._last_reported_tone = freq
-            self.tone_detected.emit(int(round(freq)))
+    def _run(self, generation: int) -> None:
+        # A worker from a previous enable may still be waking up after a
+        # quick disable/enable; it must exit rather than run alongside.
+        while generation == self._generation:
+            with self._wake:
+                while generation == self._generation:
+                    with self._buf_lock:
+                        due = self._new_samples >= ANALYSIS_STEP_S * SAMPLE_RATE
+                    if due:
+                        break
+                    self._wake.wait(timeout=0.5)
+            if generation != self._generation:
+                return
+            try:
+                self._step()
+            except Exception:
+                import traceback
 
-        raw_on = self._gate.process(mag)
-        if self._debug_log:
-            self._debug(mag)
-        self._advance(raw_on, chunk)
+                print("[morse] decode step failed:", file=sys.stderr)
+                traceback.print_exc()
+                time.sleep(1.0)
 
-    def _advance(self, raw_on: bool, chunk: bytes) -> None:
-        """Two-window debounce, then feed the transmission buffer.
+    def _get_engine(self):
+        if self._engine is None and not self._engine_failed:
+            try:
+                from morse.deepcw_engine import DeepCwEngine
 
-        Precise per-element timing no longer matters here — that's
-        pycw's job, working from the raw waveform, so once a
-        transmission is being recorded every window's audio is kept
-        unconditionally (no gaps): only *starting* a fresh recording is
-        debounced, to avoid a single noise blip kicking one off.
-        """
-        if raw_on == self._last_raw:
-            self._raw_count += 1
+                self._engine = DeepCwEngine()
+            except Exception:
+                self._engine_failed = True
+                import traceback
+
+                print("[morse] failed to load the DeepCW model:", file=sys.stderr)
+                traceback.print_exc()
+        return self._engine
+
+    def _update_tone(self, window: np.ndarray) -> Optional[float]:
+        if self._tone_hz > 0:
+            tone = self._tone_hz
         else:
-            self._last_raw = raw_on
-            self._raw_count = 1
-        confirmed_on = self._raw_count >= 2 and self._last_raw
+            from morse.deepcw_engine import detect_tone
 
-        if self._recording:
-            if confirmed_on:
-                self._silence_ms = 0.0
-                if self._lead_only:
-                    self._lead_ms += WINDOW_MS
-                    if self._lead_ms > MAX_LEAD_ON_MS:
-                        self._utterance.clear()  # drop the anomalous lead-in
-                        if self._debug_log:
-                            self._debug(0.0, "lead_in_discarded")
-                    else:
-                        self._utterance.extend(chunk)
+            found = detect_tone(window, SAMPLE_RATE)
+            tone = found if found is not None else self._detected_tone
+        if tone is not None and (
+            self._detected_tone is None or abs(tone - self._detected_tone) >= 25.0
+        ):
+            self._detected_tone = tone
+            self.tone_detected.emit(int(round(tone)))
+        return self._detected_tone if self._tone_hz <= 0 else tone
+
+    def _step(self, final: bool = False) -> None:
+        with self._step_lock:
+            engine = self._get_engine()
+            with self._buf_lock:
+                self._new_samples = 0
+                raw = bytes(self._buffer[: int(MAX_SEGMENT_S * SAMPLE_RATE) * 2])
+                pending = len(self._buffer) // 2
+                stream_end = self._dropped_samples + pending
+            if engine is None:
+                return
+            if pending < MIN_PENDING_S * SAMPLE_RATE and not final:
+                return
+
+            window = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+            tone = self._update_tone(window)
+            analysis = engine.analyze(window, SAMPLE_RATE, tone)
+            window_s = len(window) / SAMPLE_RATE
+            whole = pending * 2 <= len(raw)   # window covers the whole buffer
+
+            chars = [c for c in analysis.chars]
+            cut_s = None
+            committed = []
+            if chars:
+                last_s = analysis.frame_to_seconds(chars[-1].end_frame)
+                if final or (whole and last_s <= window_s - TRAILING_QUIET_S):
+                    committed = chars
+                    cut_s = window_s if final else self._end_of_char_cut(analysis, chars[-1], window_s)
                 else:
-                    self._utterance.extend(chunk)
-                if not self._status_active:
-                    self._status_active = True
-                    self.status_changed.emit(True, self._wpm)
+                    cut_s, committed = self._word_space_cut(analysis, window_s, near_end=False)
+                    if cut_s is None and not whole:
+                        cut_s, committed = self._word_space_cut(analysis, window_s, near_end=True)
+                        if cut_s is None:
+                            cut_s, committed = window_s, chars
+            elif final:
+                cut_s = window_s
+            elif pending > (IDLE_KEEP_S + ANALYSIS_STEP_S) * SAMPLE_RATE:
+                cut_s = (pending / SAMPLE_RATE) - IDLE_KEEP_S
+
+            # On pure noise the model now and then hallucinates a character,
+            # but such phantoms rarely survive the next pass (the same audio
+            # decoded in a different window), while real characters do. So
+            # only commit characters the previous pass also saw at the same
+            # place; otherwise wait a pass or two before giving up on them.
+            base_s = self._dropped_samples / SAMPLE_RATE
+            if committed:
+                unconfirmed = [
+                    c for c in committed
+                    if c.char != " " and not self._seen_before(
+                        c.char, base_s + analysis.frame_to_seconds(c.start_frame)
+                    )
+                ]
+                if not unconfirmed:
+                    self._postponed = 0
+                elif self._postponed < MAX_POSTPONE and not final:
+                    self._postponed += 1
+                    cut_s, committed = None, []
+                else:
+                    self._postponed = 0
+                    committed = [c for c in committed if all(c is not u for u in unconfirmed)]
+            self._prev_chars = [
+                (c.char, base_s + analysis.frame_to_seconds(c.start_frame))
+                for c in chars if c.char != " "
+            ]
+
+            text = _normalize("".join(c.char for c in committed))
+            if text:
+                wpm = _estimate_wpm(committed, analysis.frame_seconds)
+                if wpm:
+                    self._wpm = wpm
+                self._last_char_pos = self._dropped_samples + int(
+                    analysis.frame_to_seconds(committed[-1].end_frame) * SAMPLE_RATE
+                )
+                self.text_decoded.emit((" " if self._need_space else "") + text)
+                self._need_space = True
+                self._line_open = True
+
+            if chars:
+                self._last_char_pos = max(
+                    self._last_char_pos,
+                    self._dropped_samples
+                    + int(analysis.frame_to_seconds(chars[-1].end_frame) * SAMPLE_RATE),
+                )
+            quiet_s = (stream_end - self._last_char_pos) / SAMPLE_RATE
+            if self._line_open and (final or (not chars and quiet_s >= END_OF_TX_S)):
+                self.text_decoded.emit("\n")
+                self._line_open = False
+                self._need_space = False
+
+            active = bool(chars) and quiet_s <= LED_HOLD_S
+            if active != self._status_active or text:
+                self._status_active = active
+                self.status_changed.emit(active, self._wpm)
+
+            if cut_s is not None and cut_s > 0:
+                cut = int(cut_s * SAMPLE_RATE)
+                with self._buf_lock:
+                    cut = min(cut, len(self._buffer) // 2)
+                    del self._buffer[: cut * 2]
+                    self._dropped_samples += cut
+
+            if self._debug_log:
+                decoded = _normalize("".join(c.char for c in chars))
+                self._debug_log.write(
+                    f"{(time.monotonic() - self._debug_t0) * 1000.0:.0f},"
+                    f"{pending / SAMPLE_RATE:.2f},{tone or 0:.0f},"
+                    f"{decoded!r},{text!r},{'final' if final else ''}\n"
+                )
+
+    def _unit_s(self, analysis) -> float:
+        wpm = _estimate_wpm(analysis.chars, analysis.frame_seconds) or self._wpm or 20
+        return 1.2 / wpm
+
+    @staticmethod
+    def _quiet_run_after(analysis, frame: int, min_len_s: float):
+        """First stretch of real silence (tone envelope below a level halfway
+        between noise and signal) starting at or after `frame` and lasting at
+        least `min_len_s`: returns (start_s, end_s) or None."""
+        env = analysis.envelope
+        if len(env) == 0:
+            return None
+        floor = float(np.percentile(env, 25))
+        peak = float(np.percentile(env, 95))
+        if peak - floor <= 1e-6:
+            return None
+        quiet = env < floor + 0.4 * (peak - floor)
+        min_frames = max(1, int(round(min_len_s / analysis.frame_seconds)))
+        start = None
+        for i in range(max(0, frame), len(env)):
+            if quiet[i]:
+                if start is None:
+                    start = i
+                if i - start + 1 >= min_frames:
+                    end = i
+                    while end + 1 < len(env) and quiet[end + 1]:
+                        end += 1
+                    return (analysis.frame_to_seconds(start), analysis.frame_to_seconds(end))
             else:
-                self._lead_only = False  # a real gap: normal buffering now
-                self._utterance.extend(chunk)
-                self._silence_ms += WINDOW_MS
-                if self._status_active and self._silence_ms > STATUS_LED_HOLD_MS:
-                    self._status_active = False
-                    self.status_changed.emit(False, self._wpm)
-                if self._silence_ms > END_OF_TX_MS:
-                    self._flush_utterance()
-                    return
-            if len(self._utterance) > MAX_UTTERANCE_S * SAMPLE_RATE * 2:
-                self._flush_utterance()
-        elif confirmed_on:
-            self._recording = True
-            self._silence_ms = 0.0
-            self._lead_only = True
-            self._lead_ms = 0.0
-            self._utterance.clear()
-            self._utterance.extend(chunk)
-            if self._debug_log:
-                self._debug(0.0, "utterance_start")
-            if not self._status_active:
-                self._status_active = True
-                self.status_changed.emit(True, self._wpm)
+                start = None
+        return None
 
-    def _flush_utterance(self) -> None:
-        pcm = bytes(self._utterance)
-        self._utterance.clear()
-        self._recording = False
-        self._silence_ms = 0.0
+    def _end_of_char_cut(self, analysis, char, window_s: float) -> float:
+        """Cut point just after the audio of `char` really ends.
 
-        duration_ms = len(pcm) / 2.0 / SAMPLE_RATE * 1000.0
-        if duration_ms < MIN_UTTERANCE_MS:
-            if self._debug_log:
-                self._debug(0.0, f"utterance_dropped_short({duration_ms:.0f}ms)")
-            return
+        The model's label for a character does not reliably sit on its very
+        last element, so cutting a fixed distance after the label can leave
+        the tail of a dash behind, which then decodes as a phantom
+        character. Instead look in the tone envelope for the first silence
+        at least two units long (longer than any gap inside a character)."""
+        run = self._quiet_run_after(analysis, char.start_frame, 2.0 * self._unit_s(analysis))
+        if run is None:
+            return min(window_s, analysis.frame_to_seconds(char.end_frame) + CHAR_TAIL_S)
+        return min(window_s, run[0] + min(0.15, (run[1] - run[0]) / 2.0))
 
-        text = self._decode_utterance(pcm)
-        if self._debug_log:
-            self._debug(0.0, f"utterance_flush({duration_ms:.0f}ms->{text!r})")
-        if text:
-            self._wpm = _wpm_from_text(text, duration_ms)
-            self.status_changed.emit(False, self._wpm)
-            self.text_decoded.emit(text)
-            self.text_decoded.emit("\n")
+    def _word_space_cut(self, analysis, window_s: float, near_end: bool):
+        """Latest word space safely inside the window: (cut_s, chars before it).
 
-    def _decode_utterance(self, pcm: bytes) -> str:
-        try:
-            import numpy as np
-            import pycw
-            from pycw.decoder.features import detect_tone
-
-            if self._pycw_decoder is None:
-                self._pycw_decoder = pycw.Decoder()
-            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-            samples /= 32768.0
-            if self._tone_hz > 0:
-                tone = self._tone_hz
+        The engine model fires its space label at the very start of a word
+        gap, so cutting on the label itself leaves a sliver of the previous
+        element in the next window (decoded as a phantom "E"). Cut in the
+        middle of the actual silence that follows it instead."""
+        unit_s = self._unit_s(analysis)
+        limit = window_s if near_end else max(MIN_CONFIRMED_S, window_s - TAIL_GUARD_S)
+        for span in reversed(analysis.word_spaces):
+            run = self._quiet_run_after(analysis, span.start_frame - 2, 2.0 * unit_s)
+            if run is not None and run[0] <= analysis.frame_to_seconds(span.end_frame) + 3.0 * unit_s:
+                split_s = (run[0] + run[1]) / 2.0
             else:
-                # pycw's own auto-detect only searches 350-1700 Hz, which
-                # misses low CW tones some operators use (300-350 Hz is
-                # within this app's own passband); redo its own precise
-                # FFT-based search with that floor lowered, rather than
-                # feeding it a hint from our own coarse ~200 Hz-resolution
-                # tracker, which isn't precise enough for the coherent
-                # demodulation pycw's feature extraction does at whatever
-                # frequency it's given (an imprecise hint measurably
-                # corrupts the decode, confirmed by testing).
-                tone = detect_tone(samples, SAMPLE_RATE, lo=250, hi=1700)
-            text = self._pycw_decoder.decode(samples, SAMPLE_RATE, tone=tone)
-        except Exception:
-            # Surfaced instead of silently swallowed: a missing/broken
-            # pycw install must not look identical to "nothing was said".
-            import traceback
-
-            print("[morse] pycw decode failed:", file=sys.stderr)
-            traceback.print_exc()
-            if self._debug_log:
-                self._debug(0.0, f"decode_error({traceback.format_exc()!r})")
-            return ""
-        return text.strip().upper()
+                split_s = analysis.frame_to_seconds(span.start_frame) + 3.5 * unit_s
+            if MIN_CONFIRMED_S <= split_s <= limit:
+                chars: List = [c for c in analysis.chars if c.end_frame <= span.end_frame]
+                return split_s, chars
+        return None, []

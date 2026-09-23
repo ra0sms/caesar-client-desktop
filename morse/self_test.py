@@ -89,13 +89,14 @@ def run(message, wpm, tone, noise_frac) -> bool:
 
     data = buf.tobytes()
 
-    decoder = MorseDecoder()
+    decoder = MorseDecoder(threaded=False)
     collected = []
     decoder.text_decoded.connect(collected.append)
     decoder.set_enabled(True)
 
     for i in range(0, len(data), 4096):
         decoder.feed_pcm(data[i : i + 4096])
+    decoder.flush()
 
     out = "".join(collected)
     normalized = out.replace("\n", " ").replace("  ", " ").strip()

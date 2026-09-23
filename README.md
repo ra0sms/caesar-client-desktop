@@ -25,8 +25,10 @@ This client connects to the **NANO Server** — a hardware/software device based
 - Configurable audio input/output devices
 - Automatic CW (Morse code) decoder — decoded text appears in a live
   one-line scrolling ticker ("бегущая строка"), with automatic beat-tone
-  detection (300–1200 Hz) and automatic speed estimation (no extra
-  dependencies)
+  detection (300–1250 Hz) and speed estimation. Decoding uses the
+  [DeepCW](https://github.com/e04/web-deep-cw-decoder) neural model
+  (`morse/deepcw/`, run with `onnxruntime`), which is licensed under
+  AGPL-3.0 — see `morse/deepcw/README.md`
 - Cross-platform: **Linux** and **Windows**
 
 ---

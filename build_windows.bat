@@ -33,6 +33,8 @@ pyinstaller ^
     --windowed ^
     --name "%APP_NAME%" ^
     --add-data "version.txt;." ^
+    --add-data "morse/deepcw;morse/deepcw" ^
+    --collect-all onnxruntime ^
     main.py
 
 if errorlevel 1 (
