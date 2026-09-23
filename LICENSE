@@ -1,3 +1,33 @@
+CAESAR Desktop - licensing
+==========================
+
+The source code of CAESAR Desktop is licensed under the MIT License below,
+with the following exceptions, which are licensed under the GNU Affero
+General Public License version 3 only (AGPL-3.0-only):
+
+  - morse/deepcw/            the DeepCW CW decoding model (model.onnx,
+                             model.onnx.json), from
+                             https://github.com/e04/deepcw-engine
+  - morse/deepcw_engine.py   a Python port of the deepcw-engine reference
+                             implementation
+
+The full text of the AGPL-3.0 is in morse/deepcw/LICENSE.
+
+Because the CW decoder runs as part of the application, the built
+application (the AppImage and Windows executables published on the
+Releases page, and any other build that includes the files above) is a
+combined work and is distributed under the terms of AGPL-3.0-only. Its
+complete corresponding source code is this repository at the release tag
+matching the version (for example, v1.2.0 for version 1.2.0):
+https://github.com/ra0sms/caesar-client-desktop
+
+The MIT-licensed files may still be used on their own under the MIT
+License.
+
+-------------------------------------------------------------------------
+
+MIT License
+
 Copyright (c) 2026 Anton Gavrilov RA0SMS
  
  Permission is hereby granted, free of charge, to any person obtaining

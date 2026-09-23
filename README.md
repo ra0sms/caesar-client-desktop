@@ -46,6 +46,9 @@ Ready-to-use binaries are available on the [Releases page](https://github.com/ra
 | Linux x86_64 | `CAESAR_Desktop_vX.X.X_-x86_64.AppImage` |
 | Windows x86_64 | `CAESAR_Desktop_vX.X.X_windows_x86_64.exe` |
 
+Since v1.2.0 the release binaries include the AGPL-3.0 licensed DeepCW
+model and are distributed under AGPL-3.0 — see [License](#license).
+
 ---
 
 ## Requirements
@@ -198,3 +201,14 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 ```
 
 ---
+
+## License
+
+The source code is licensed under the MIT License, except for the CW
+decoding model in `morse/deepcw/` and `morse/deepcw_engine.py`, which are
+licensed under AGPL-3.0-only (from [deepcw-engine](https://github.com/e04/deepcw-engine)).
+
+Built applications (AppImage / Windows executables) include those files
+and are therefore distributed under **AGPL-3.0-only**. Their complete
+source code is this repository at the matching release tag (e.g.
+`v1.2.0`). See [LICENSE](LICENSE) for details.

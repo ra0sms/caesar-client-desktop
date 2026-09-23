@@ -6,9 +6,13 @@
 [DeepCW](https://github.com/e04/web-deep-cw-decoder) web decoder.
 
 They are distributed under the GNU Affero General Public License v3.0,
-see `LICENSE` in this directory. Note that this differs from the MIT
-license of the rest of CAESAR Desktop.
+see `LICENSE` in this directory. This differs from the MIT license of the
+rest of CAESAR Desktop; builds that include these files are distributed
+under AGPL-3.0 as a whole — see the top-level `LICENSE`.
 
 `morse/deepcw_engine.py` is a Python port of the engine's reference
-pre-processing and CTC decoding; `morse/decoder.py` ports the streaming
-segmentation used by the DeepCW web app (`useStreamingDecode.ts`).
+pre-processing and CTC decoding, also under AGPL-3.0-only.
+
+`morse/decoder.py` (MIT, like the rest of CAESAR Desktop) is an
+independent Python implementation of the streaming approach used by the
+DeepCW web app.

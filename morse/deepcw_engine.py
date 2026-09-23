@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Port of the deepcw-engine reference implementation
+# (https://github.com/e04/deepcw-engine), see morse/deepcw/LICENSE.
+
 """DeepCW neural CW decoder: model loading, pre-processing and CTC decoding.
 
 Port of the reference implementation in deepcw-engine
