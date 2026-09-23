@@ -49,6 +49,9 @@ class CharSpan:
     char: str
     start_frame: int
     end_frame: int
+    # model posterior for this label (peak over its frames): real characters
+    # come out at ~1.0, hallucinations on noise well below
+    prob: float = 1.0
 
 
 @dataclass
@@ -188,7 +191,7 @@ class DeepCwEngine:
 
         spectrogram = self._spectrogram(audio)
         log_probs = self.session.run([self.output_name], {self.input_name: spectrogram})[0]
-        result = self._ctc_spans(log_probs[0].argmax(axis=-1))
+        result = self._ctc_spans(log_probs[0])
         band = spectrogram[0, 0]
         if model_tone:
             center = int(round(model_tone * self.fft_length / self.sample_rate)) - self.start_bin
@@ -198,7 +201,8 @@ class DeepCwEngine:
         result.envelope = band.max(axis=1)
         return result
 
-    def _ctc_spans(self, best_path: np.ndarray) -> Analysis:
+    def _ctc_spans(self, log_probs: np.ndarray) -> Analysis:
+        best_path = log_probs.argmax(axis=-1)
         result = Analysis(frames=len(best_path), frame_seconds=self.frame_seconds)
         previous = None
         active = None
@@ -225,4 +229,9 @@ class DeepCwEngine:
 
         if space_start is not None:
             result.word_spaces.append(CharSpan(" ", space_start, len(best_path) - 1))
+
+        probs = np.exp(log_probs)
+        for span in result.chars:
+            column = self.chars.index(span.char)
+            span.prob = float(probs[span.start_frame : span.end_frame + 1, column].max())
         return result

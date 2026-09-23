@@ -8,17 +8,17 @@ Decoding strategy
 This is a port of the streaming loop of the DeepCW web decoder
 (``useStreamingDecode.ts``) on top of the deepcw-engine model (see
 ``morse/deepcw_engine.py``). Incoming audio accumulates in a pending
-buffer; after every second of new audio the whole pending buffer (up to
-the model's 20 s limit) is decoded again from scratch. Text is only
-committed once it can no longer change:
+buffer; after every half second of new audio the whole pending buffer (up
+to the model's 20 s limit) is decoded again from scratch.
 
-  * up to the last word space that lies safely before the end of the
-    buffer (the tail may still hold a half-received character), or
-  * everything, once nothing has been decoded for a while at the end of
-    the buffer (the transmission paused or ended).
-
-Committed audio is dropped from the buffer, so each character is shown
-exactly once, typically 1.5-3 s after it was sent.
+Each character is shown as soon as it has settled: it is at least
+EARLY_GUARD_S old, the model is confident about it, and the previous pass
+saw the same character at the same place (typically ~1 s after the
+character was sent). Audio is only dropped from the buffer at a word gap
+safely before the end of the buffer, or once the tone has really been off
+for a while (the transmission paused or ended), because the model needs
+the surrounding context to decode reliably; whatever is still unsettled
+at that point is shown then.
 
 Threading contract:
   * ``feed_pcm()`` is called from the RX reader thread and only appends
@@ -42,12 +42,14 @@ from morse.table import CHAR_TO_MORSE
 
 SAMPLE_RATE = 8000
 
-ANALYSIS_STEP_S = 1.0     # re-decode after this much new audio
+ANALYSIS_STEP_S = 0.5     # re-decode after this much new audio
 MIN_PENDING_S = 2.0       # don't bother decoding less than this
 MAX_SEGMENT_S = 20.0      # longest window the engine model accepts
 TAIL_GUARD_S = 1.25       # the newest audio may hold a partial character
+EARLY_GUARD_S = 0.7       # a character this old (and seen twice) is shown
 MIN_CONFIRMED_S = 2.0     # never commit a sliver shorter than this
 TRAILING_QUIET_S = 1.5    # nothing decoded this long at the end: commit all
+PAUSE_MIN_S = 1.0         # ...if the tone has also really been off this long
 CHAR_TAIL_S = 0.5         # keep this much audio after the last committed char
 END_OF_TX_S = 3.0         # no characters this long: end the line
 IDLE_KEEP_S = 3.0         # with nothing decoded, keep only this much audio
@@ -55,6 +57,15 @@ LED_HOLD_S = 2.0          # activity LED stays lit this long after a character
 MAX_BUFFER_S = 60.0       # hard cap if inference ever falls behind
 CONFIRM_TOLERANCE_S = 0.25  # same character this close in the previous pass
 MAX_POSTPONE = 2          # passes to wait for an unconfirmed character
+# A shown character's label may drift a frame or two between passes; this
+# must stay below the closest two letters can be (4 units, ~0.1 s at 40 WPM).
+DEDUP_TOLERANCE_S = 0.08
+# Model confidence (peak posterior of a character's label). Real characters
+# score ~1.0 on any decent signal; hallucinations on pure noise came out at
+# 0.12-0.67 in testing. Only confident characters take the fast path; and a
+# window with no confident character at all is treated as noise.
+FAST_PATH_MIN_PROB = 0.9
+NOISE_WINDOW_MIN_PROB = 0.7
 
 # Optional diagnostic trace: set this environment variable to a file path
 # to log every analysis pass (and dump the raw PCM to <path>.pcm, headerless
@@ -99,7 +110,7 @@ def _estimate_wpm(chars, frame_seconds: float) -> int:
 class MorseDecoder(QObject):
     """Decodes CW from raw PCM into text with the DeepCW model."""
 
-    # Committed text, a word space between segments, "\n" at end of a line
+    # Decoded characters as they settle (with word spaces), "\n" at end of a line
     text_decoded = pyqtSignal(str)
     # signal_active (activity LED), estimated WPM
     status_changed = pyqtSignal(bool, int)
@@ -216,7 +227,8 @@ class MorseDecoder(QObject):
 
     def _reset_state(self) -> None:
         self._detected_tone: Optional[float] = None
-        self._need_space = False
+        self._space_pending = False
+        self._last_emitted_s = -1e9    # stream time of the last shown character
         self._line_open = False
         self._last_char_pos = 0        # stream position (samples)
         self._status_active = False
@@ -300,11 +312,22 @@ class MorseDecoder(QObject):
             whole = pending * 2 <= len(raw)   # window covers the whole buffer
 
             chars = [c for c in analysis.chars]
+            if not any(c.prob >= FAST_PATH_MIN_PROB for c in chars if c.char != " "):
+                # no character the model is sure about: likely pure noise,
+                # so keep only what it is at least fairly sure about
+                chars = [c for c in chars if c.char == " " or c.prob >= NOISE_WINDOW_MIN_PROB]
+                if not any(c.char != " " for c in chars):
+                    chars = []
+                analysis.chars = chars
             cut_s = None
             committed = []
+            cut_at_gap = True   # False only when forced to cut mid-word
             if chars:
                 last_s = analysis.frame_to_seconds(chars[-1].end_frame)
-                if final or (whole and last_s <= window_s - TRAILING_QUIET_S):
+                if final or (
+                    whole and last_s <= window_s - TRAILING_QUIET_S
+                    and self._silent_to_end(analysis, chars[-1], window_s)
+                ):
                     committed = chars
                     cut_s = window_s if final else self._end_of_char_cut(analysis, chars[-1], window_s)
                 else:
@@ -313,6 +336,7 @@ class MorseDecoder(QObject):
                         cut_s, committed = self._word_space_cut(analysis, window_s, near_end=True)
                         if cut_s is None:
                             cut_s, committed = window_s, chars
+                            cut_at_gap = False
             elif final:
                 cut_s = window_s
             elif pending > (IDLE_KEEP_S + ANALYSIS_STEP_S) * SAMPLE_RATE:
@@ -339,22 +363,19 @@ class MorseDecoder(QObject):
                 else:
                     self._postponed = 0
                     committed = [c for c in committed if all(c is not u for u in unconfirmed)]
+            text = self._emit_settled(analysis, chars, committed, window_s, base_s)
             self._prev_chars = [
                 (c.char, base_s + analysis.frame_to_seconds(c.start_frame))
                 for c in chars if c.char != " "
             ]
-
-            text = _normalize("".join(c.char for c in committed))
-            if text:
-                wpm = _estimate_wpm(committed, analysis.frame_seconds)
-                if wpm:
-                    self._wpm = wpm
-                self._last_char_pos = self._dropped_samples + int(
-                    analysis.frame_to_seconds(committed[-1].end_frame) * SAMPLE_RATE
-                )
-                self.text_decoded.emit((" " if self._need_space else "") + text)
-                self._need_space = True
-                self._line_open = True
+            if (
+                cut_s is not None and committed and cut_at_gap
+                and self._last_emitted_s < base_s + cut_s
+            ):
+                # the word gap (or pause) goes away with the audio being cut,
+                # so the next character starts a new word — unless it was
+                # already shown (with its space) before this cut
+                self._space_pending = True
 
             if chars:
                 self._last_char_pos = max(
@@ -366,7 +387,7 @@ class MorseDecoder(QObject):
             if self._line_open and (final or (not chars and quiet_s >= END_OF_TX_S)):
                 self.text_decoded.emit("\n")
                 self._line_open = False
-                self._need_space = False
+                self._space_pending = False
 
             active = bool(chars) and quiet_s <= LED_HOLD_S
             if active != self._status_active or text:
@@ -387,6 +408,58 @@ class MorseDecoder(QObject):
                     f"{pending / SAMPLE_RATE:.2f},{tone or 0:.0f},"
                     f"{decoded!r},{text!r},{'final' if final else ''}\n"
                 )
+
+    def _emit_settled(self, analysis, chars, committed, window_s: float, base_s: float) -> str:
+        """Show every character that can no longer change, one at a time.
+
+        Audio is still only cut at word gaps (the model needs the context),
+        but a character doesn't have to wait for the end of its word: once
+        it is EARLY_GUARD_S old and the previous pass saw the same character
+        at the same place, the model won't revise it. Characters that are
+        part of this pass's commit are shown regardless. Emission stops at
+        the first unsettled character so the text never gets reordered.
+        """
+        committed_ids = {id(c) for c in committed}
+        commit_end = committed[-1].end_frame if committed else -1
+        out = []
+        space_between = False
+        for c in chars:
+            at_s = base_s + analysis.frame_to_seconds(c.start_frame)
+            if c.char == " ":
+                # the space label sits right behind the previous letter's
+                # label, so it must not fall under the duplicate check below
+                if at_s > self._last_emitted_s:
+                    space_between = True
+                continue
+            if at_s <= self._last_emitted_s + DEDUP_TOLERANCE_S:
+                continue
+            settled = id(c) in committed_ids or (
+                c.prob >= FAST_PATH_MIN_PROB
+                and analysis.frame_to_seconds(c.end_frame) <= window_s - EARLY_GUARD_S
+                and self._seen_before(c.char, at_s)
+            )
+            if not settled:
+                if c.end_frame <= commit_end:
+                    continue   # dropped as unconfirmed, audio is being cut anyway
+                break
+            if self._line_open and (space_between or self._space_pending):
+                out.append(" ")
+            out.append(c.char)
+            space_between = False
+            self._space_pending = False
+            self._line_open = True
+            self._last_emitted_s = at_s
+            self._last_char_pos = max(
+                self._last_char_pos,
+                self._dropped_samples + int(analysis.frame_to_seconds(c.end_frame) * SAMPLE_RATE),
+            )
+        text = "".join(out)
+        if text:
+            wpm = _estimate_wpm(chars, analysis.frame_seconds)
+            if wpm:
+                self._wpm = wpm
+            self.text_decoded.emit(text)
+        return text
 
     def _unit_s(self, analysis) -> float:
         wpm = _estimate_wpm(analysis.chars, analysis.frame_seconds) or self._wpm or 20
@@ -419,6 +492,18 @@ class MorseDecoder(QObject):
             else:
                 start = None
         return None
+
+    def _silent_to_end(self, analysis, char, window_s: float) -> bool:
+        """Is the audio after `char` really silent up to the end of the window?
+
+        "Nothing new decoded for a while" is not enough on its own: at slow
+        speeds a long character (a digit takes ~2 s at 10 WPM) is still
+        being sent when that holds, and cutting then splits a word."""
+        run = self._quiet_run_after(analysis, char.start_frame, 2.0 * self._unit_s(analysis))
+        if run is None:
+            return False
+        reaches_end = run[1] >= window_s - 2.0 * analysis.frame_seconds
+        return reaches_end and window_s - run[0] >= PAUSE_MIN_S
 
     def _end_of_char_cut(self, analysis, char, window_s: float) -> float:
         """Cut point just after the audio of `char` really ends.
