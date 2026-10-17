@@ -167,7 +167,7 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 |---|---|---|
 | 5000 | UDP | Audio stream (RTP/Opus) |
 | 5001 | UDP | PTT control |
-| 5002 | UDP | Server ping / heartbeat (client → server) |
+| 5002 | UDP | Ping / heartbeat (both directions: older servers ping the client) |
 | 3001 | TCP | CAT (transceiver control) |
 
 ---
@@ -191,6 +191,7 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 ├── network/
 │   ├── ptt.py              # PTT UDP client
 │   ├── cat_bridge.py       # CAT bridge (virtual serial port ↔ TCP)
+│   ├── ping_server.py      # Ping responder (for older servers)
 │   └── server_monitor.py   # Connection status monitor
 ├── gui/
 │   └── main_window.py      # Main application window
