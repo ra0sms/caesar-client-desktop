@@ -3,12 +3,7 @@ import subprocess
 import threading
 from typing import Callable, Optional
 
-from audio.backend import (
-    find_gst_launch,
-    get_gst_env,
-    get_gst_popen_kwargs,
-    get_gst_sink,
-)
+from audio.backend import GstProcess, get_gst_sink
 from network.constants import AUDIO_PORT
 
 # Tap branch output caps: 8 kHz mono S16LE (fed to the CW decoder)
@@ -27,17 +22,15 @@ class AudioRX:
     """
 
     def __init__(self) -> None:
-        self.proc: Optional[subprocess.Popen] = None
+        self.gst: Optional[GstProcess] = None
         self.pcm_callback: Optional[Callable[[bytes], None]] = None
         self._tap_thread: Optional[threading.Thread] = None
 
     def start(self, ip: str, device: str, tap: bool = False) -> None:
-        if self.proc:
+        if self.gst:
             return
 
         cmd = [
-            find_gst_launch(),
-            "-q",
             "udpsrc",
             f"port={AUDIO_PORT}",
             "caps=application/x-rtp,payload=96",
@@ -86,12 +79,7 @@ class AudioRX:
         else:
             cmd += ["!"] + get_gst_sink(device)
 
-        self.proc = subprocess.Popen(
-            cmd,
-            env=get_gst_env(),
-            stdout=subprocess.PIPE if tap else None,
-            **get_gst_popen_kwargs(),
-        )
+        self.gst = GstProcess(cmd, stdout=subprocess.PIPE if tap else None)
 
         if tap:
             self._tap_thread = threading.Thread(
@@ -99,14 +87,14 @@ class AudioRX:
             )
             self._tap_thread.start()
 
+    def failure(self) -> Optional[str]:
+        """None while receiving (or stopped on purpose), else the error."""
+        return self.gst.failure() if self.gst else None
+
     def stop(self) -> None:
-        if self.proc:
-            try:
-                self.proc.terminate()
-                self.proc.wait(timeout=5)
-            except Exception:
-                pass
-            self.proc = None
+        if self.gst:
+            self.gst.stop()
+            self.gst = None
 
         if self._tap_thread:
             self._tap_thread.join(timeout=2)
@@ -116,11 +104,11 @@ class AudioRX:
 
     def _read_pcm(self) -> None:
         """Read raw PCM from the pipeline stdout until EOF."""
-        if not self.proc or not self.proc.stdout:
+        if not self.gst or not self.gst.stdout:
             return
 
         try:
-            fd = self.proc.stdout.fileno()
+            fd = self.gst.stdout.fileno()
         except Exception:
             return
 

@@ -1,26 +1,18 @@
-import subprocess
 from typing import Optional
 
-from audio.backend import (
-    find_gst_launch,
-    get_gst_env,
-    get_gst_popen_kwargs,
-    get_gst_src,
-)
+from audio.backend import GstProcess, get_gst_src
 from network.constants import AUDIO_PORT
 
 
 class AudioTX:
     def __init__(self) -> None:
-        self.proc: Optional[subprocess.Popen] = None
+        self.gst: Optional[GstProcess] = None
 
     def start(self, ip: str, device: str) -> None:
-        if self.proc:
+        if self.gst:
             return
 
-        cmd = [
-            find_gst_launch(),
-            "-q",
+        args = [
             *get_gst_src(device),
             "!",
             "audioconvert",
@@ -41,10 +33,13 @@ class AudioTX:
             f"port={AUDIO_PORT}",
         ]
 
-        self.proc = subprocess.Popen(cmd, env=get_gst_env(), **get_gst_popen_kwargs())
+        self.gst = GstProcess(args)
+
+    def failure(self) -> Optional[str]:
+        """None while streaming (or stopped on purpose), else the error."""
+        return self.gst.failure() if self.gst else None
 
     def stop(self) -> None:
-        if self.proc:
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
-            self.proc = None
+        if self.gst:
+            self.gst.stop()
+            self.gst = None

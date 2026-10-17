@@ -3,6 +3,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from collections import deque
 from pathlib import Path
 from typing import List, Optional
 
@@ -77,6 +79,80 @@ def get_gst_env() -> dict:
                 break
 
     return env
+
+
+# ─── GStreamer process ────────────────────────────────────────────────────────
+
+# "/GstPipeline:pipeline0/GstUDPSrc:udpsrc0" -> "udpsrc0"
+_GST_ELEMENT_PATH = re.compile(r"/GstPipeline:\w+(?:/Gst\w+:\w+)*/Gst\w+:(\w+)")
+
+STDERR_TAIL_LINES = 20
+
+
+def summarize_gst_error(lines: List[str], returncode: int) -> str:
+    """One-line description of why gst-launch exited, for the UI.
+
+    gst-launch prints the error first and debug details after it (in the
+    user's locale), so the first line is the one worth showing.
+    """
+    for line in lines:
+        if line.strip():
+            return _GST_ELEMENT_PATH.sub(r"\1", line.strip())
+    return f"gst-launch-1.0 exited with code {returncode}"
+
+
+class GstProcess:
+    """A running gst-launch-1.0 pipeline.
+
+    Its stderr is read on a background thread (keeping only the last
+    lines), so the pipe can't fill up and an exit can be explained.
+    """
+
+    def __init__(self, args: List[str], stdout: Optional[int] = None) -> None:
+        self.proc = subprocess.Popen(
+            [find_gst_launch(), "-q", *args],
+            env=get_gst_env(),
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            **get_gst_popen_kwargs(),
+        )
+        self._stderr: deque = deque(maxlen=STDERR_TAIL_LINES)
+        self._stderr_reader = threading.Thread(
+            target=self._read_stderr, daemon=True, name="gst-stderr"
+        )
+        self._stderr_reader.start()
+
+    def _read_stderr(self) -> None:
+        assert self.proc.stderr is not None
+        for raw in self.proc.stderr:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                self._stderr.append(line)
+
+    @property
+    def stdout(self):
+        return self.proc.stdout
+
+    def failure(self) -> Optional[str]:
+        """None while running; otherwise why the pipeline stopped."""
+        returncode = self.proc.poll()
+        if returncode is None:
+            return None
+        self._stderr_reader.join(timeout=0.5)
+        return summarize_gst_error(list(self._stderr), returncode)
+
+    def stderr_text(self) -> str:
+        return "\n".join(self._stderr)
+
+    def stop(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        self._stderr_reader.join(timeout=1)
 
 
 # ─── GStreamer pipeline elements ──────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import ipaddress
 from typing import Optional
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from audio.rx import AudioRX
 from audio.tx import AudioTX
@@ -24,6 +24,7 @@ class SessionManager(QObject):
     status_message = pyqtSignal(str, str)  # text, stylesheet
     ptt_state_changed = pyqtSignal(bool)
     cat_state_changed = pyqtSignal(bool, str, str)  # ok, msg, port
+    audio_error = pyqtSignal(str)  # why an audio pipeline stopped, "" = OK
 
     def __init__(
         self,
@@ -47,6 +48,13 @@ class SessionManager(QObject):
         self._output_device: str = ""
         self._cat: Optional[CatBridge] = None
         self._cat_status_handler = None
+
+        # gst-launch can exit right away (bad device, missing plugin, busy
+        # port) or later (device unplugged); check the pipelines every second.
+        self._audio_failed: bool = False
+        self._audio_timer = QTimer(self)
+        self._audio_timer.setInterval(1000)
+        self._audio_timer.timeout.connect(self._check_audio)
 
     # ── Properties ──────────────────────────────────────────────────────────
 
@@ -110,6 +118,8 @@ class SessionManager(QObject):
 
         self.connected = True
         self.status_message.emit("Connecting...", "")
+        self._reset_audio_watch()
+        self._audio_timer.start()
 
         # ── CAT Bridge ──────────────────────────────────────────────────
         if enable_cat:
@@ -140,7 +150,26 @@ class SessionManager(QObject):
             self.status_message.emit("Error: gst-launch-1.0 not found", "color:#ff4444;font-weight:bold;")
             self.morse.set_enabled(False)
             return
+        self._reset_audio_watch()
         self.morse.set_enabled(enabled)
+
+    # ── Audio watchdog ──────────────────────────────────────────────────────
+
+    def _reset_audio_watch(self) -> None:
+        self._audio_failed = False
+        self.audio_error.emit("")
+
+    def _check_audio(self) -> None:
+        if self._audio_failed:
+            return
+        for name, stream in (("TX", self.tx), ("RX", self.rx)):
+            error = stream.failure()
+            if error:
+                self._audio_failed = True
+                details = stream.gst.stderr_text() if stream.gst else ""
+                print(f"[Audio] {name} pipeline stopped: {error}\n{details}")
+                self.audio_error.emit(f"{name} audio stopped: {error}")
+                return
 
     def _start_cat(self) -> None:
         if self._cat:
@@ -165,6 +194,8 @@ class SessionManager(QObject):
 
     def disconnect(self) -> None:
         self.connected = False
+        self._audio_timer.stop()
+        self._reset_audio_watch()
 
         try:
             self.ptt.off(self._ip)
@@ -220,6 +251,7 @@ class SessionManager(QObject):
     # ── Cleanup ─────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
+        self._audio_timer.stop()
         try:
             self.ptt.off(self._ip)
         except Exception:
