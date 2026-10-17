@@ -1,6 +1,30 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.2.1 (2026-10-17)
+-------------------
+- Fix: PTT keepalive could race with PTT release and send a '1' after the OFF packet,
+  keying the transmitter again for up to 0.5 s (until the server's keepalive timeout)
+- Fix: CAT virtual port (PTY) was never switched to raw mode (the setup error was
+  swallowed): until the CAT program reconfigured the port, radio replies were echoed
+  back to the radio, held back until a newline, and CI-V bytes 0x0D/0x03/0x7F mangled
+- Fix: CAT bridge reconnects when the server closes the connection (IP not allowed,
+  web panel restart) instead of showing ONLINE with a dead link; commands typed while
+  offline are discarded rather than replayed to the radio; a PTY nobody reads can no
+  longer hang the bridge
+- Add: "NOT ALLOWED" status with the IP the server sees when this machine's IP is not
+  in the server's client_ip.cfg (nano-server with PING_UNAUTHORIZED reply)
+- Add: GStreamer pipeline failures (bad device, missing plugin, busy port, device
+  unplugged) are shown under the status line; full gst-launch output on the console
+- Add: only one client can run at a time (lock file + UDP 5000/5002 check, also
+  catches older versions); a second start shows a message instead of failing silently
+- Add: Opus packet loss concealment on RX (smoother audio over VPN / mobile links)
+- Fix: config is saved atomically and missing keys fall back to defaults
+- Deps: removed unused psutil; sounddevice only on macOS; PyInstaller moved to
+  requirements-dev.txt
+- Quality: removed unused PulseAudio loopback helpers; unit tests in tests/
+  (python -m unittest discover -s tests -t .)
+
 v1.2.0 (2026-09-23)
 -------------------
 - Add: automatic CW (Morse code) decoder based on the DeepCW neural model
