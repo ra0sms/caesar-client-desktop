@@ -179,6 +179,7 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 ├── config.py               # Load/save settings
 ├── footswitch.py           # Foot pedal (CTS via serial)
 ├── serial_ports.py         # Serial port enumeration
+├── single_instance.py      # One client per machine (lock file + UDP port check)
 ├── version.txt             # Current version (source of truth)
 ├── changelog.txt           # Release history
 ├── build_appimage.sh       # Linux build script
