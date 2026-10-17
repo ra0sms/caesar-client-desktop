@@ -27,3 +27,6 @@ CAT_PORT = 3001
 
 MAGIC_PING_REQUEST = b"PING_REQUEST"
 MAGIC_PING_RESPONSE = b"PING_RESPONSE"
+# Reply to a client whose IP is not in the server's client_ip.cfg:
+# b"PING_UNAUTHORIZED <client ip as seen by the server>" (nano-server)
+MAGIC_PING_UNAUTHORIZED = b"PING_UNAUTHORIZED"

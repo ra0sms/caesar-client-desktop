@@ -54,6 +54,12 @@ class MainWindow(QWidget):
         self.status = QLabel("Disconnected")
         self.status.setStyleSheet("color: gray;")
 
+        # Shown only while an audio pipeline has failed
+        self.audio_status = QLabel()
+        self.audio_status.setWordWrap(True)
+        self.audio_status.setStyleSheet("color:#ff4444;font-weight:bold;")
+        self.audio_status.hide()
+
         # ---------------- AUDIO ----------------
 
         self.input_combo = QComboBox()
@@ -150,6 +156,7 @@ class MainWindow(QWidget):
         layout.addLayout(buttons)
 
         layout.addWidget(self.status)
+        layout.addWidget(self.audio_status)
 
         audio_header = QHBoxLayout()
         audio_header.addWidget(QLabel("Audio Devices"))
@@ -197,6 +204,7 @@ class MainWindow(QWidget):
         self.session.status_message.connect(self.on_status_message)
         self.session.ptt_state_changed.connect(self.on_ptt_state)
         self.session.cat_state_changed.connect(self.on_cat_state)
+        self.session.audio_error.connect(self.on_audio_error)
         self.session.footswitch.state_changed.connect(self.footswitch_changed)
         self.session.monitor.status_changed.connect(self.on_server_status)
 
@@ -413,12 +421,22 @@ class MainWindow(QWidget):
             self.cat_status.setStyleSheet("color:#ff4444;font-weight:bold;")
             self.cat_port_label.setStyleSheet("color:#ff4444;")
 
-    def on_server_status(self, ok: bool, ping_ms: int) -> None:
+    def on_audio_error(self, text: str) -> None:
+        self.audio_status.setText(text)
+        self.audio_status.setVisible(bool(text))
+
+    def on_server_status(self, ok: bool, ping_ms: int, refused_ip: str) -> None:
 
         if not self.session.is_connected:
             return
 
-        if ok:
+        if ok and refused_ip:
+            # Reachable, but PTT/CAT from this machine are ignored
+            self.status.setText(
+                f"NOT ALLOWED | {ping_ms} ms — put {refused_ip} into client_ip.cfg on the server"
+            )
+            self.status.setStyleSheet("color:#ff8800;font-weight:bold;")
+        elif ok:
             self.status.setText(f"ONLINE | {ping_ms} ms")
             self.status.setStyleSheet("color:#00ff66;font-weight:bold;")
         else:

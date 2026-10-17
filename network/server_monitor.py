@@ -5,11 +5,18 @@ from typing import Optional
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from network.constants import PING_PORT, MAGIC_PING_REQUEST, MAGIC_PING_RESPONSE
+from network.constants import (
+    MAGIC_PING_REQUEST,
+    MAGIC_PING_RESPONSE,
+    MAGIC_PING_UNAUTHORIZED,
+    PING_PORT,
+)
 
 
 class ServerMonitor(QObject):
-    status_changed = pyqtSignal(bool, int)  # ok + ping ms
+    # reachable, ping ms, and the client IP the server saw if it refused
+    # this client (not in its client_ip.cfg), "" when authorized
+    status_changed = pyqtSignal(bool, int, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -41,6 +48,7 @@ class ServerMonitor(QObject):
         while self.running:
             ok = False
             ping_ms = -1
+            refused_ip = ""
 
             try:
                 start = time.time()
@@ -53,13 +61,18 @@ class ServerMonitor(QObject):
                 if data == MAGIC_PING_RESPONSE:
                     ok = True
                     ping_ms = int((end - start) * 1000)
+                elif data.startswith(MAGIC_PING_UNAUTHORIZED):
+                    ok = True
+                    ping_ms = int((end - start) * 1000)
+                    seen = data[len(MAGIC_PING_UNAUTHORIZED):].strip()
+                    refused_ip = seen.decode(errors="replace") or "?"
 
             except socket.timeout:
                 pass
             except Exception:
                 pass
 
-            self.status_changed.emit(ok, ping_ms)
+            self.status_changed.emit(ok, ping_ms, refused_ip)
             time.sleep(1)
 
         sock.close()
