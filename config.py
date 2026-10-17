@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
@@ -18,20 +20,35 @@ DEFAULT_CONFIG: Dict[str, str] = {
 
 
 def load_config() -> Dict[str, str]:
-
-    if not CONFIG_FILE.exists():
-        return DEFAULT_CONFIG.copy()
+    """Saved settings on top of the defaults (missing keys get defaults)."""
+    config = DEFAULT_CONFIG.copy()
 
     try:
         with open(CONFIG_FILE, "r") as f:
             data: Dict[str, Any] = json.load(f)
-            return {k: str(v) for k, v in data.items()}
+        if isinstance(data, dict):
+            config.update({k: str(v) for k, v in data.items()})
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[Config] Could not read {CONFIG_FILE}: {e}")
 
-    except Exception:
-        return DEFAULT_CONFIG.copy()
+    return config
 
 
 def save_config(data: Dict[str, str]) -> None:
-
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    """Write atomically: a crash mid-write must not leave a broken file
+    (which would silently reset every setting on the next start)."""
+    fd, tmp_path = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
