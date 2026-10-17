@@ -123,6 +123,12 @@ python main.py
 
 ## Building
 
+The build scripts use the `venv` with the build tools installed:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ### Linux — AppImage
 
 ```bash
