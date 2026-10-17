@@ -4,11 +4,18 @@ import select
 import socket
 import termios
 import time
+import tty
 from typing import Optional
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from network.constants import CAT_PORT
+
+CONNECT_TIMEOUT = 2.0   # TCP connect attempt
+SEND_TIMEOUT = 2.0      # a send stuck this long means the link is dead
+RECONNECT_DELAY = 2.0   # pause between connection attempts
+POLL_INTERVAL = 0.2     # select() timeout, bounds the reaction to stop()
+READ_SIZE = 1024
 
 
 class CatBridge(QThread):
@@ -50,43 +57,21 @@ class CatBridge(QThread):
         return self.slave_name
 
     def setup_pty(self) -> None:
-        """Configure the PTY (raw mode, no flow control, non-blocking reads)."""
+        """Put the PTY in raw 8N1 mode: no echo, no line editing, no
+        character translation, no flow control.
+
+        CAT programs usually reconfigure the port when they open it, but
+        until then (and after they close it) a cooked PTY would echo the
+        radio's replies back to the radio, hold back replies without a
+        trailing newline and mangle binary CI-V bytes (0x0D, 0x03, 0x7F).
+        """
         try:
-            attrs = termios.tcgetattr(self.master_fd)
+            tty.setraw(self.slave_fd, termios.TCSANOW)
 
-            # Basic port settings
+            attrs = termios.tcgetattr(self.slave_fd)
             attrs[2] |= termios.CLOCAL | termios.CREAD
-            attrs[2] &= ~termios.CSIZE
-            attrs[2] |= termios.CS8
-            attrs[2] &= ~termios.PARENB
-            attrs[2] &= ~termios.CSTOPB
             attrs[2] &= ~termios.CRTSCTS
-
-            # Disable flow control
-            attrs[0] &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
-
-            # Disable echo and canonical mode
-            attrs[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)
-
-            # Non-blocking reads
-            attrs[6] = 0  # VMIN = 0
-            attrs[5] = 1  # VTIME = 0.1 sec
-
-            termios.tcsetattr(self.master_fd, termios.TCSANOW, attrs)
-
-            # Same settings for the slave FD
-            attrs_slave = termios.tcgetattr(self.slave_fd)
-            attrs_slave[2] |= termios.CLOCAL | termios.CREAD
-            attrs_slave[2] &= ~termios.CSIZE
-            attrs_slave[2] |= termios.CS8
-            attrs_slave[2] &= ~termios.PARENB
-            attrs_slave[2] &= ~termios.CSTOPB
-            attrs_slave[2] &= ~termios.CRTSCTS
-            attrs_slave[0] &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
-            attrs_slave[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)
-            attrs_slave[6] = 0
-            attrs_slave[5] = 1
-            termios.tcsetattr(self.slave_fd, termios.TCSANOW, attrs_slave)
+            termios.tcsetattr(self.slave_fd, termios.TCSANOW, attrs)
 
             print("[CAT] PTY configured")
 
@@ -100,58 +85,113 @@ class CatBridge(QThread):
 
     # ---------------- TCP ----------------
 
-    def connect_tcp(self) -> None:
+    def connect_tcp(self) -> bool:
+        """Connect to the server, retrying until connected or stopped.
+
+        Anything the CAT program writes to the PTY while we are offline is
+        discarded: replaying stale commands (e.g. a TX command) to the radio
+        once the link comes back would be worse than losing them.
+        """
         while self.running:
             try:
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(2)
-                self.sock.connect((self.host, self.port))
-                self.sock.setblocking(False)
-                self.emit_status(True, f"connected {self.host}:{self.port}")
-                print("[CAT] TCP connected")
-                return
-            except Exception as e:
+                sock = socket.create_connection((self.host, self.port), timeout=CONNECT_TIMEOUT)
+            except OSError as e:
                 self.emit_status(False, f"reconnecting... {e}")
-                time.sleep(2)
+                self._discard_pty_input(RECONNECT_DELAY)
+                continue
+
+            # Blocking with a timeout, so sendall() always sends everything
+            # (or fails) instead of dropping data on a full socket buffer.
+            sock.settimeout(SEND_TIMEOUT)
+            self.sock = sock
+            self.emit_status(True, f"connected {self.host}:{self.port}")
+            print("[CAT] TCP connected")
+            return True
+        return False
+
+    def disconnect_tcp(self, reason: str) -> None:
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+            print(f"[CAT] TCP disconnected: {reason}")
+            self.emit_status(False, f"{reason}, reconnecting...")
+
+    # ---------------- PTY I/O ----------------
+
+    def _discard_pty_input(self, duration: float) -> None:
+        """Drain the PTY for ``duration`` seconds (or until stopped)."""
+        deadline = time.monotonic() + duration
+        while self.running:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            r, _, _ = select.select([self.master_fd], [], [], min(remaining, POLL_INTERVAL))
+            if r:
+                try:
+                    os.read(self.master_fd, READ_SIZE)
+                except BlockingIOError:
+                    pass
+
+    def _write_pty(self, data: bytes) -> None:
+        # The master is non-blocking: with no CAT program reading the PTY
+        # its buffer fills up, and a blocking write would hang this thread
+        # (and stop()). Excess replies are dropped instead.
+        try:
+            os.write(self.master_fd, data)
+        except BlockingIOError:
+            pass
 
     # ---------------- MAIN LOOP ----------------
 
     def run(self) -> None:
         self.running = True
         port_name = self.create_pty()
-        self.connect_tcp()
+        os.set_blocking(self.master_fd, False)
 
         print(f"[CAT] 🚀 CAT Bridge is running.")
         print(f"[CAT] 📡 Use this port in FLRig: {port_name}")
 
-        while self.running:
-            # ---------------- FLRig → Radio (PTY → TCP) ----------------
-            try:
-                r, _, _ = select.select([self.master_fd], [], [], 0.05)
+        try:
+            while self.running:
+                if self.sock is None and not self.connect_tcp():
+                    break
 
+                r, _, _ = select.select([self.master_fd, self.sock], [], [], POLL_INTERVAL)
+
+                # ---------------- FLRig → Radio (PTY → TCP) ----------------
                 if self.master_fd in r:
-                    data = os.read(self.master_fd, 1024)
-                    if data and self.sock:
-                        self.sock.sendall(data)
-
-            except OSError:
-                break
-            except Exception:
-                pass
-
-            # ---------------- Radio → FLRig (TCP → PTY) ----------------
-            try:
-                if self.sock:
                     try:
-                        resp = self.sock.recv(1024)
-                        if resp:
-                            os.write(self.master_fd, resp)
+                        data = os.read(self.master_fd, READ_SIZE)
                     except BlockingIOError:
-                        pass
-            except Exception:
-                self.connect_tcp()
+                        data = b""
+                    if data:
+                        try:
+                            self.sock.sendall(data)
+                        except OSError as e:
+                            self.disconnect_tcp(f"send failed: {e}")
+                            continue
 
-        self.cleanup()
+                # ---------------- Radio → FLRig (TCP → PTY) ----------------
+                if self.sock in r:
+                    try:
+                        resp = self.sock.recv(READ_SIZE)
+                    except OSError as e:
+                        self.disconnect_tcp(f"receive failed: {e}")
+                        continue
+                    if not resp:
+                        # The server closes the connection when this IP is not
+                        # allowed (client_ip.cfg) or when the web panel restarts.
+                        self.disconnect_tcp("server closed connection")
+                        self._discard_pty_input(RECONNECT_DELAY)
+                        continue
+                    self._write_pty(resp)
+        except OSError as e:
+            print(f"[CAT] PTY error: {e}")
+        finally:
+            self.cleanup()
 
     # ---------------- STOP ----------------
 

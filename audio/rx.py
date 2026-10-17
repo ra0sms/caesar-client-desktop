@@ -48,6 +48,7 @@ class AudioRX:
             "rtpopusdepay",
             "!",
             "opusdec",
+            "plc=true",  # conceal lost packets (VPN / mobile links)
             "!",
             "audioconvert",
         ]

@@ -7,7 +7,6 @@ from gui.main_window import MainWindow
 from gui.session_manager import SessionManager
 from morse.decoder import MorseDecoder
 from network.ptt import PTTClient
-from network.ping_server import PingServer
 from network.server_monitor import ServerMonitor
 
 from footswitch import FootswitchThread
@@ -19,10 +18,6 @@ rx = AudioRX()
 tx = AudioTX()
 ptt = PTTClient()
 footswitch = FootswitchThread()
-
-# server side ping responder (5002)
-ping_server = PingServer()
-ping_server.start()
 
 # client monitor
 monitor = ServerMonitor()
