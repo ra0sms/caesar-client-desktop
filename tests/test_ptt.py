@@ -1,6 +1,7 @@
 """PTT client protocol tests (run: python -m unittest discover -s tests -t .)."""
 
 import socket
+import threading
 import time
 import unittest
 from unittest import mock
@@ -56,14 +57,40 @@ class PTTClientTest(unittest.TestCase):
     def test_no_keepalive_after_off_under_rapid_toggling(self) -> None:
         # A tiny interval makes the keepalive thread race with off();
         # a keepalive '1' after OFF would key the transmitter again.
-        with mock.patch.object(ptt_module, "PTT_KEEPALIVE_INTERVAL", 0.0005):
+        # Packets are read while sending: the burst would overflow the
+        # socket buffer and the kernel would drop most of them.
+        packets = []
+        sending = threading.Event()
+        sending.set()
+
+        def reader() -> None:
+            while sending.is_set():
+                packets.extend(self._collect_ext(quiet=0.05))
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        sent = 0
+        original_send = self.client._send
+
+        def counting_send(packet: bytes) -> None:
+            nonlocal sent
+            if len(packet) == 6:
+                sent += 1
+            original_send(packet)
+
+        with mock.patch.object(self.client, "_send", counting_send), \
+                mock.patch.object(ptt_module, "PTT_KEEPALIVE_INTERVAL", 0.0005):
             for _ in range(300):
                 self.client.on("127.0.0.1")
                 time.sleep(0.001)
                 self.client.off("127.0.0.1")
                 time.sleep(0.002)  # PTT is off here: nothing may be sent
+        time.sleep(0.1)
+        sending.clear()
+        thread.join()
+        packets.extend(self._collect_ext())
 
-        packets = self._collect_ext()
+        self.assertEqual(len(packets), sent, "packets were dropped, the check is incomplete")
         state_off = True
         for cmd, seq, flags in packets:
             if cmd == OFF:
@@ -73,6 +100,28 @@ class PTTClientTest(unittest.TestCase):
             else:
                 state_off = False
         self.assertEqual(packets[-1][0], OFF)
+
+    def test_off_during_keepalive_send_is_not_followed_by_keepalive(self) -> None:
+        # Deterministic version of the race: hold the keepalive thread
+        # between its "still on?" check and the send, and release PTT then.
+        in_keepalive = threading.Event()
+        original_packet = self.client._ext_packet
+
+        def slow_packet(state: bytes, flags: int) -> bytes:
+            if flags & KEEPALIVE and not in_keepalive.is_set():
+                in_keepalive.set()
+                time.sleep(0.1)
+            return original_packet(state, flags)
+
+        with mock.patch.object(self.client, "_ext_packet", slow_packet), \
+                mock.patch.object(ptt_module, "PTT_KEEPALIVE_INTERVAL", 0.01):
+            self.client.on("127.0.0.1")
+            self.assertTrue(in_keepalive.wait(1))
+            self.client.off("127.0.0.1")
+            time.sleep(0.2)
+
+        packets = self._collect_ext()
+        self.assertEqual(packets[-1][0], OFF, f"packet after OFF: {packets[-1]}")
 
     def test_repeated_on_starts_single_keepalive_thread(self) -> None:
         self.client.on("127.0.0.1")
