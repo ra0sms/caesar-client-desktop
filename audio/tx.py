@@ -13,6 +13,9 @@ from audio.backend import (
 from audio.voice_keyer import wav_source_args
 from network.constants import AUDIO_PORT
 
+# Name of our capture stream in PulseAudio/PipeWire (see get_gst_src)
+TX_CLIENT_NAME = "caesar-tx"
+
 # How long to look for our capture stream in PulseAudio after starting
 MIC_STREAM_LOOKUP_TIMEOUT = 3.0
 MIC_STREAM_LOOKUP_INTERVAL = 0.05
@@ -71,7 +74,7 @@ class AudioTX:
             return
 
         self._ip, self._device = ip, device
-        args = [*get_gst_src(device), *self._sender_args(ip)]
+        args = [*get_gst_src(device, TX_CLIENT_NAME), *self._sender_args(ip)]
 
         self.gating_warning = ""
         with self._mic_cond:
