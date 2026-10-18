@@ -29,6 +29,8 @@ This client connects to the **NANO Server** — a hardware/software device based
   [DeepCW](https://github.com/e04/web-deep-cw-decoder) neural model
   (`morse/deepcw/`, run with `onnxruntime`), which is licensed under
   AGPL-3.0 — see `morse/deepcw/README.md`
+- Voice keyer (Linux): record three messages (CQ, call, …) and send them with
+  PTT by F1–F3; Esc or PTT stops a message
 - Cross-platform: **Linux** and **Windows**
 
 ---

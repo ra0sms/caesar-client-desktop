@@ -1,6 +1,22 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.2.3 (2026-10-19)
+-------------------
+- Add: voice keyer (Linux) — three message slots with a name, Rec, Listen and Send.
+  Rec records up to 30 s from the selected input (~/.caesar-desktop/voice/msgN.wav),
+  Listen plays it to the local output, Send (F1-F3) keys PTT and sends the message
+  through the same audio stream as the mic, then releases PTT 300 ms after the end.
+  Esc, the same F-key or the PTT button stop it; manual PTT (button or pedal) takes
+  over from a message without unkeying the radio
+- Fix: since v1.2.2 every later gst-launch-1.0 recording on the system (other apps
+  too) started muted: the sound server remembers mute per application name and the
+  muted TX stream shared that name. The TX stream is now named "caesar-tx".
+  If recordings are still silent after updating, unmute "gst-launch-1.0" once in the
+  sound settings (e.g. pavucontrol, Recording tab)
+- Fix: connecting no longer overwrites the whole config file (it would drop settings
+  such as the voice keyer message names)
+
 v1.2.2 (2026-10-18)
 -------------------
 - Add: the microphone is muted while not transmitting (Linux). The server plays all
