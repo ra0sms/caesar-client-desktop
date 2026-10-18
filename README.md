@@ -169,6 +169,41 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 
 ---
 
+## Voice Keyer
+
+The three voice keyer messages are stored as WAV files:
+
+| Slot | Key | File (Linux) |
+|---|---|---|
+| 1 | F1 | `~/.caesar-desktop/voice/msg1.wav` |
+| 2 | F2 | `~/.caesar-desktop/voice/msg2.wav` |
+| 3 | F3 | `~/.caesar-desktop/voice/msg3.wav` |
+
+Recordings made in the client are **WAV, PCM 16-bit, 48 kHz, mono**.
+
+You can also put ready-made files there instead of recording them in the
+client. The file must be WAV with integer PCM samples (16- or 24-bit). Any
+sample rate works, and stereo is mixed down to mono, but 48 kHz mono 16-bit
+needs no conversion. 32-bit float WAV is not supported: such a slot shows as
+"not recorded". Files you put there are not limited to 30 s (that limit only
+applies to recording in the client).
+
+Convert a file with ffmpeg or sox:
+
+```bash
+mkdir -p ~/.caesar-desktop/voice
+ffmpeg -i cq.mp3 -ac 1 -ar 48000 -c:a pcm_s16le ~/.caesar-desktop/voice/msg1.wav
+# or
+sox cq.mp3 -r 48000 -c 1 -b 16 ~/.caesar-desktop/voice/msg1.wav
+```
+
+The client checks the files when it starts and on Connect / Disconnect, so a
+file added while the client is running appears after the next Connect.
+Message names (CQ, Call, 73) are stored in `config.json` as `voice_label_1`
+… `voice_label_3`.
+
+---
+
 ## Network Ports
 
 | Port | Protocol | Purpose |
