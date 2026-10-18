@@ -158,15 +158,20 @@ class GstProcess:
 # ─── GStreamer pipeline elements ──────────────────────────────────────────────
 
 
+def _device_arg(device: str) -> List[str]:
+    # An empty "device=" breaks the pipeline; no device means the default one
+    return [f"device={device}"] if device else []
+
+
 def get_gst_src(device: str) -> List[str]:
     """GStreamer audio source element + device arg for the current platform."""
     if _is_windows():
         # WASAPI requires a system device GUID — use system default for now
         return ["wasapisrc"]
     elif _is_macos():
-        return ["osxaudiosrc", f"device={device}"]
+        return ["osxaudiosrc", *_device_arg(device)]
     else:
-        return ["pulsesrc", f"device={device}"]
+        return ["pulsesrc", *_device_arg(device)]
 
 
 def get_gst_sink(device: str) -> List[str]:
@@ -175,9 +180,9 @@ def get_gst_sink(device: str) -> List[str]:
         # WASAPI requires a system device GUID — use system default for now
         return ["wasapisink"]
     elif _is_macos():
-        return ["osxaudiosink", f"device={device}"]
+        return ["osxaudiosink", *_device_arg(device)]
     else:
-        return ["pulsesink", f"device={device}"]
+        return ["pulsesink", *_device_arg(device)]
 
 
 # ─── Device enumeration ───────────────────────────────────────────────────────
@@ -240,6 +245,50 @@ def _sounddevice_list(input_channels: bool = True) -> List[str]:
     except Exception:
         pass
     return devices
+
+
+# ─── PulseAudio mic gating (Linux only) ──────────────────────────────────────
+
+
+def supports_mic_gating() -> bool:
+    """Whether the TX capture stream can be muted while not transmitting."""
+    return _is_linux()
+
+
+def _pactl(*args: str) -> subprocess.CompletedProcess:
+    env = get_gst_env()
+    env["LC_ALL"] = "C"  # parse "Source Output #N", not a translation of it
+    return subprocess.run(
+        ["pactl", *args], env=env, capture_output=True, text=True, timeout=2
+    )
+
+
+def find_source_output(pid: int) -> Optional[str]:
+    """Index of the capture stream (source output) opened by process ``pid``."""
+    try:
+        output = _pactl("list", "source-outputs").stdout
+    except Exception:
+        return None
+
+    index: Optional[str] = None
+    for line in output.splitlines():
+        line = line.strip()
+        header = re.match(r"Source Output #(\d+)", line)
+        if header:
+            index = header.group(1)
+            continue
+        owner = re.match(r'application\.process\.id = "(\d+)"', line)
+        if owner and index is not None and int(owner.group(1)) == pid:
+            return index
+    return None
+
+
+def set_source_output_mute(index: str, mute: bool) -> bool:
+    """Mute/unmute one capture stream (not the device: other apps keep the mic)."""
+    try:
+        return _pactl("set-source-output-mute", index, "1" if mute else "0").returncode == 0
+    except Exception:
+        return False
 
 
 # ─── PulseAudio Null-Sink management (Linux only) ────────────────────────────

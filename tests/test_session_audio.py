@@ -15,6 +15,7 @@ class FakeStream:
     def __init__(self) -> None:
         self.error = None
         self.gst = None
+        self.gating_warning = ""
 
     def failure(self):
         return self.error
@@ -44,6 +45,12 @@ class SessionAudioWatchTest(unittest.TestCase):
         with mock.patch("builtins.print"):
             self.session.disconnect()
         self.assertEqual(self.errors[-1], "")
+
+    def test_mic_gating_warning_shown_once(self) -> None:
+        self.tx.gating_warning = "Mic stays open while not transmitting"
+        self.session._check_audio()
+        self.session._check_audio()
+        self.assertEqual(self.errors, ["Mic stays open while not transmitting"])
 
 
 if __name__ == "__main__":

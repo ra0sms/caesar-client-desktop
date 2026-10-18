@@ -52,6 +52,7 @@ class SessionManager(QObject):
         # gst-launch can exit right away (bad device, missing plugin, busy
         # port) or later (device unplugged); check the pipelines every second.
         self._audio_failed: bool = False
+        self._gating_reported: bool = False
         self._audio_timer = QTimer(self)
         self._audio_timer.setInterval(1000)
         self._audio_timer.timeout.connect(self._check_audio)
@@ -157,11 +158,15 @@ class SessionManager(QObject):
 
     def _reset_audio_watch(self) -> None:
         self._audio_failed = False
+        self._gating_reported = False
         self.audio_error.emit("")
 
     def _check_audio(self) -> None:
         if self._audio_failed:
             return
+        if self.tx.gating_warning and not self._gating_reported:
+            self._gating_reported = True
+            self.audio_error.emit(self.tx.gating_warning)
         for name, stream in (("TX", self.tx), ("RX", self.rx)):
             error = stream.failure()
             if error:
@@ -222,14 +227,25 @@ class SessionManager(QObject):
     def ptt_on(self) -> None:
         if not self.connected:
             return
-        self.ptt.on(self._ip)
+        self._key(True)
         self.ptt_state_changed.emit(True)
 
     def ptt_off(self) -> None:
         if not self.connected:
             return
-        self.ptt.off(self._ip)
+        self._key(False)
         self.ptt_state_changed.emit(False)
+
+    def _key(self, on: bool) -> None:
+        # The mic is opened/muted on a worker thread (non-blocking), so the
+        # PTT packet is not delayed; the mic follows within a few ms, well
+        # inside the server's jitter buffer and the radio's TX switching.
+        if on:
+            self.tx.set_mic(True)
+            self.ptt.on(self._ip)
+        else:
+            self.ptt.off(self._ip)
+            self.tx.set_mic(False)
 
     def ptt_toggle(self, state: bool) -> None:
         if state:
@@ -242,10 +258,7 @@ class SessionManager(QObject):
     def on_footswitch(self, pressed: bool) -> None:
         if not self.connected:
             return
-        if pressed:
-            self.ptt.on(self._ip)
-        else:
-            self.ptt.off(self._ip)
+        self._key(pressed)
         self.ptt_state_changed.emit(pressed)
 
     # ── Cleanup ─────────────────────────────────────────────────────────────
