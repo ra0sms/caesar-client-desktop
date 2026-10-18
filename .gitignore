@@ -16,6 +16,7 @@ build/
 dist/
 Releases/
 tools/
+AppDir/
 *.spec
 
 # IDE / editor
@@ -27,5 +28,10 @@ tools/
 .DS_Store
 Thumbs.db
 
-# Local config
+# Local config and notes (the app's config lives in ~/.caesar-desktop/)
 *.local
+/config.json
+make_new_versions.txt
+
+# Stray session files from tools given ":memory:" as a path
+*.ses
