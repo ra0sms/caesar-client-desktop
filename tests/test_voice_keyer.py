@@ -61,6 +61,29 @@ class LocationTest(unittest.TestCase):
         self.assertEqual(vk.gst_location(Path('/a b/c"d.wav')), 'location="/a b/c\\"d.wav"')
 
 
+class RecorderUnmuteTest(unittest.TestCase):
+    def test_recording_stream_is_unmuted_once_it_appears(self) -> None:
+        # The sound server re-applies a remembered mute after the stream is
+        # created, so the recorder must unmute its own stream explicitly.
+        gst = mock.Mock()
+        gst.proc.pid = 4242
+        gst.proc.poll.return_value = None
+        lookups = iter([None, None, "77"])
+        with mock.patch.object(vk, "find_source_output", lambda pid: next(lookups)) as _, \
+                mock.patch.object(vk, "set_source_output_mute") as set_mute, \
+                mock.patch.object(vk, "STREAM_LOOKUP_INTERVAL", 0.001):
+            vk._unmute_own_stream(gst)
+        set_mute.assert_called_once_with("77", False)
+
+    def test_recorder_names_its_stream(self) -> None:
+        with mock.patch.object(vk, "GstProcess") as gst_cls, \
+                mock.patch.object(vk, "supports_mic_gating", lambda: False), \
+                mock.patch.object(vk, "get_gst_src", lambda device, name: ["pulsesrc", f"client-name={name}"]), \
+                tempfile.TemporaryDirectory() as tmp, mock.patch.object(vk, "VOICE_DIR", Path(tmp)):
+            vk.VoiceRecorder().start(1, "mic")
+        self.assertIn("client-name=caesar-voice-keyer", gst_cls.call_args[0][0])
+
+
 @unittest.skipUnless(HAVE_GST, "GStreamer not installed")
 class RecorderTest(VoiceDirTest):
     TEST_SOURCE = ["audiotestsrc", "is-live=true", "freq=700"]
@@ -102,7 +125,7 @@ class SendMessageTest(VoiceDirTest):
         for name, value in (
             ("AUDIO_PORT", rx.getsockname()[1]),
             ("supports_mic_gating", lambda: False),
-            ("get_gst_src", lambda device: ["audiotestsrc", "is-live=true"]),
+            ("get_gst_src", lambda device, client_name="": ["audiotestsrc", "is-live=true"]),
         ):
             patcher = mock.patch.object(tx_module, name, value)
             patcher.start()

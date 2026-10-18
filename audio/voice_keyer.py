@@ -8,11 +8,20 @@ records them from the microphone and plays them to the local output
 
 import os
 import signal
+import threading
+import time
 import wave
 from pathlib import Path
 from typing import List, Optional
 
-from audio.backend import GstProcess, get_gst_sink, get_gst_src
+from audio.backend import (
+    GstProcess,
+    find_source_output,
+    get_gst_sink,
+    get_gst_src,
+    set_source_output_mute,
+    supports_mic_gating,
+)
 from config import CONFIG_DIR
 
 VOICE_DIR: Path = CONFIG_DIR / "voice"
@@ -21,6 +30,27 @@ MAX_RECORD_SECONDS = 30
 MIN_RECORD_SECONDS = 0.3
 
 WAV_CAPS = "audio/x-raw,format=S16LE,rate=48000,channels=1"
+
+# Name of the recording stream in PulseAudio/PipeWire (see get_gst_src)
+RECORDER_CLIENT_NAME = "caesar-voice-keyer"
+STREAM_LOOKUP_TIMEOUT = 3.0
+STREAM_LOOKUP_INTERVAL = 0.05
+
+
+def _unmute_own_stream(gst: GstProcess) -> None:
+    """Unmute the recording stream once it shows up in the sound server.
+
+    PipeWire/PulseAudio re-apply a mute they remembered for the stream
+    name after the stream is created (pulsesrc's mute=false doesn't
+    override it), so the stream is unmuted explicitly, like TX gating does.
+    """
+    deadline = time.monotonic() + STREAM_LOOKUP_TIMEOUT
+    while time.monotonic() < deadline and gst.proc.poll() is None:
+        index = find_source_output(gst.proc.pid)
+        if index is not None:
+            set_source_output_mute(index, False)
+            return
+        time.sleep(STREAM_LOOKUP_INTERVAL)
 
 
 def message_path(slot: int) -> Path:
@@ -75,11 +105,15 @@ class VoiceRecorder:
         self.slot = slot
         self._tmp = VOICE_DIR / f".msg{slot}.recording.wav"
         args = [
-            *(source or get_gst_src(device)),
+            *(source or get_gst_src(device, RECORDER_CLIENT_NAME)),
             "!", "audioconvert", "!", "audioresample", "!", WAV_CAPS,
             "!", "wavenc", "!", "filesink", gst_location(self._tmp),
         ]
         self.gst = GstProcess(args, eos_on_interrupt=True)
+        if source is None and supports_mic_gating():
+            threading.Thread(
+                target=_unmute_own_stream, args=(self.gst,), daemon=True, name="rec-unmute"
+            ).start()
 
     def failure(self) -> Optional[str]:
         """Why recording stopped on its own (e.g. the device failed)."""
