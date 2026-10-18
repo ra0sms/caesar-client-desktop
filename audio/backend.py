@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -108,9 +109,14 @@ class GstProcess:
     lines), so the pipe can't fill up and an exit can be explained.
     """
 
-    def __init__(self, args: List[str], stdout: Optional[int] = None) -> None:
+    def __init__(
+        self, args: List[str], stdout: Optional[int] = None, eos_on_interrupt: bool = False
+    ) -> None:
+        # -e: on SIGINT send EOS through the pipeline before exiting, so
+        # muxers like wavenc can finish the file (see finish()).
+        flags = ["-q", "-e"] if eos_on_interrupt else ["-q"]
         self.proc = subprocess.Popen(
-            [find_gst_launch(), "-q", *args],
+            [find_gst_launch(), *flags, *args],
             env=get_gst_env(),
             stdout=stdout,
             stderr=subprocess.PIPE,
@@ -143,6 +149,22 @@ class GstProcess:
 
     def stderr_text(self) -> str:
         return "\n".join(self._stderr)
+
+    @property
+    def finished_ok(self) -> bool:
+        """The pipeline ran to its end (EOS) and exited without error."""
+        return self.proc.poll() == 0
+
+    def finish(self, timeout: float = 3.0) -> None:
+        """Stop a pipeline started with eos_on_interrupt=True cleanly:
+        SIGINT makes gst-launch push EOS, so files get finalized."""
+        if self.proc.poll() is None and os.name == "posix":
+            self.proc.send_signal(signal.SIGINT)
+            try:
+                self.proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                pass
+        self.stop()
 
     def stop(self) -> None:
         if self.proc.poll() is None:

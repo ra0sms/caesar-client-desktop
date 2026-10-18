@@ -1,13 +1,18 @@
 import sys
+import time
 from pathlib import Path
 
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QShortcut,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +24,13 @@ from audio.backend import (
     null_sink_exists,
     remove_null_sink,
     NULL_SINK_NAME,
+)
+from audio.voice_keyer import (
+    MAX_RECORD_SECONDS,
+    MESSAGE_COUNT,
+    VoicePlayer,
+    VoiceRecorder,
+    message_duration,
 )
 from config import load_config, save_config
 from gui.marquee import MarqueeLabel
@@ -135,6 +147,42 @@ class MainWindow(QWidget):
         # keep the decoder state in sync with the UI at startup
         self.session.morse.set_enabled(self.morse_check.isChecked())
 
+        # ---------------- VOICE KEYER ----------------
+
+        self.voice_recorder = VoiceRecorder()
+        self.voice_player = VoicePlayer()
+        self._voice_record_started = 0.0
+        self._voice_errors = {}  # slot -> last record/send error
+
+        self.voice_grid = QGridLayout()
+        self.voice_rows = {}
+        for slot in range(1, MESSAGE_COUNT + 1):
+            name = QLineEdit(cfg.get(f"voice_label_{slot}", ""))
+            name.setPlaceholderText(f"Message {slot}")
+            name.setMaximumWidth(160)
+            name.editingFinished.connect(lambda s=slot: self.voice_label_changed(s))
+            rec = QPushButton("● Rec")
+            rec.clicked.connect(lambda _=False, s=slot: self.voice_record_clicked(s))
+            listen = QPushButton("▶ Listen")
+            listen.clicked.connect(lambda _=False, s=slot: self.voice_listen_clicked(s))
+            send = QPushButton()
+            send.clicked.connect(lambda _=False, s=slot: self.voice_send_clicked(s))
+            info = QLabel()
+            info.setMinimumWidth(90)
+            for col, widget in enumerate((name, rec, listen, send, info)):
+                self.voice_grid.addWidget(widget, slot - 1, col)
+            self.voice_rows[slot] = {"name": name, "rec": rec, "listen": listen, "send": send, "info": info}
+
+            QShortcut(QKeySequence(f"F{slot}"), self, activated=lambda s=slot: self.voice_send_clicked(s))
+        QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self.voice_cancel)
+
+        # Recording progress / auto-stop, end of "Listen" playback
+        self._voice_timer = QTimer(self)
+        self._voice_timer.setInterval(200)
+        self._voice_timer.timeout.connect(self._voice_tick)
+
+        self._voice_refresh()
+
         # ---------------- LAYOUT ----------------
 
         top = QHBoxLayout()
@@ -189,6 +237,10 @@ class MainWindow(QWidget):
 
         layout.addWidget(self.ptt_btn)
 
+        # Voice keyer
+        layout.addWidget(QLabel("Voice Keyer (F1-F3 send, Esc stop)"))
+        layout.addLayout(self.voice_grid)
+
         # CAT UI
         layout.addWidget(self.cat_checkbox)
         layout.addWidget(self.cat_port_label)
@@ -197,7 +249,7 @@ class MainWindow(QWidget):
         self.setLayout(layout)
 
         self.setWindowTitle(f"CAESAR Client v{APP_VERSION}")
-        self.resize(620, 500)
+        self.resize(620, 620)
 
         # ---------------- SIGNALS ----------------
 
@@ -207,6 +259,7 @@ class MainWindow(QWidget):
         self.session.audio_error.connect(self.on_audio_error)
         self.session.footswitch.state_changed.connect(self.footswitch_changed)
         self.session.monitor.status_changed.connect(self.on_server_status)
+        self.session.voice_state.connect(self.on_voice_state)
 
         self.morse_check.toggled.connect(self.morse_toggled)
         self.morse_clear_btn.clicked.connect(self.morse_clear)
@@ -353,6 +406,7 @@ class MainWindow(QWidget):
 
         if ok:
             self.ptt_btn.setEnabled(True)
+        self._voice_refresh()
 
     # =====================================================
     # DISCONNECT
@@ -377,6 +431,7 @@ class MainWindow(QWidget):
         self.set_ptt_visual(False)
 
         self.ptt_btn.setEnabled(False)
+        self._voice_refresh()
 
     # =====================================================
     # PTT BUTTON
@@ -473,11 +528,129 @@ class MainWindow(QWidget):
             self.morse_wpm_label.setStyleSheet("color: gray;")
 
     # =====================================================
+    # VOICE KEYER
+    # =====================================================
+
+    def voice_label_changed(self, slot: int) -> None:
+        cfg = load_config()
+        cfg[f"voice_label_{slot}"] = self.voice_rows[slot]["name"].text().strip()
+        save_config(cfg)
+
+    def voice_record_clicked(self, slot: int) -> None:
+        if self.voice_recorder.recording:
+            if self.voice_recorder.slot == slot:
+                self._voice_finish_recording()
+            return
+        if self.session.voice_slot:
+            return  # don't record while a message is on the air
+        self.voice_player.stop()
+        self._voice_errors.pop(slot, None)
+        try:
+            self.voice_recorder.start(slot, self.input_combo.currentText())
+        except FileNotFoundError:
+            self._voice_errors[slot] = "gst-launch-1.0 not found"
+        self._voice_record_started = time.monotonic()
+        self._voice_timer.start()
+        self._voice_refresh()
+
+    def _voice_finish_recording(self) -> None:
+        slot = self.voice_recorder.slot
+        error = self.voice_recorder.stop()
+        if error:
+            print(f"[Voice] recording message {slot} failed: {error}")
+            self._voice_errors[slot] = error
+        self._voice_refresh()
+
+    def voice_listen_clicked(self, slot: int) -> None:
+        if self.voice_player.playing and self.voice_player.slot == slot:
+            self.voice_player.stop()
+        else:
+            self.voice_player.play(slot, self.output_combo.currentText())
+            self._voice_timer.start()
+        self._voice_refresh()
+
+    def voice_send_clicked(self, slot: int) -> None:
+        if self.voice_recorder.recording or message_duration(slot) is None:
+            return
+        self.voice_player.stop()
+        self._voice_errors.pop(slot, None)
+        self.session.send_voice_message(slot)  # same slot again = stop
+        self._voice_refresh()
+
+    def voice_cancel(self) -> None:
+        self.session.cancel_voice()
+        self.voice_player.stop()
+        self._voice_refresh()
+
+    def on_voice_state(self, slot: int) -> None:
+        self._voice_refresh()
+
+    def _voice_tick(self) -> None:
+        if self.voice_recorder.recording:
+            elapsed = time.monotonic() - self._voice_record_started
+            stopped_by_itself = self.voice_recorder.failure() is not None
+            if elapsed >= MAX_RECORD_SECONDS or stopped_by_itself:
+                self._voice_finish_recording()
+            else:
+                info = self.voice_rows[self.voice_recorder.slot]["info"]
+                info.setText(f"● {int(elapsed)} / {MAX_RECORD_SECONDS} s")
+                return
+        if self.voice_player.slot and not self.voice_player.playing:
+            self.voice_player.stop()
+            self._voice_refresh()
+        if not self.voice_recorder.recording and not self.voice_player.playing:
+            self._voice_timer.stop()
+
+    def _voice_refresh(self) -> None:
+        recording = self.voice_recorder.slot if self.voice_recorder.recording else 0
+        listening = self.voice_player.slot if self.voice_player.playing else 0
+        sending = self.session.voice_slot
+        connected = self.session.is_connected
+
+        for slot, row in self.voice_rows.items():
+            duration = message_duration(slot)
+            busy = bool(recording or sending)
+
+            row["rec"].setText("■ Stop" if recording == slot else "● Rec")
+            row["rec"].setEnabled(not busy or recording == slot)
+            row["rec"].setStyleSheet("color:#ff4444;font-weight:bold;" if recording == slot else "")
+
+            row["listen"].setText("■ Stop" if listening == slot else "▶ Listen")
+            row["listen"].setEnabled(duration is not None and not recording)
+
+            row["send"].setText("■ Stop" if sending == slot else f"F{slot} Send")
+            row["send"].setEnabled(connected and duration is not None and not recording)
+            row["send"].setStyleSheet(
+                "QPushButton { background-color:#cc0000; color:white; font-weight:bold; }"
+                if sending == slot else ""
+            )
+
+            info = row["info"]
+            if recording == slot:
+                continue  # updated by _voice_tick
+            error = self._voice_errors.get(slot)
+            if error:
+                info.setText("error")
+                info.setToolTip(error)
+                info.setStyleSheet("color:#ff4444;")
+            elif duration is not None:
+                info.setText(f"{duration:.1f} s")
+                info.setToolTip("")
+                info.setStyleSheet("color:#00aa55;")
+            else:
+                info.setText("not recorded")
+                info.setToolTip("")
+                info.setStyleSheet("color: gray;")
+
+    # =====================================================
     # EXIT
     # =====================================================
 
     def closeEvent(self, a0) -> None:
 
+        if self.voice_recorder.recording:
+            self.voice_recorder.stop()
+        self.voice_player.stop()
         self.session.cleanup()
 
         if a0:

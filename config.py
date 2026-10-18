@@ -16,6 +16,9 @@ DEFAULT_CONFIG: Dict[str, str] = {
     "footswitch_port": "",
     "cat_enabled": "true",
     "morse_enabled": "false",
+    "voice_label_1": "CQ",
+    "voice_label_2": "Call",
+    "voice_label_3": "73",
 }
 
 

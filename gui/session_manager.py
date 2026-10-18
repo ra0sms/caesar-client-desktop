@@ -5,6 +5,7 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from audio.rx import AudioRX
 from audio.tx import AudioTX
+from audio.voice_keyer import message_path
 from config import load_config, save_config
 from footswitch import FootswitchThread
 from morse.decoder import MorseDecoder
@@ -12,6 +13,11 @@ from network.cat_bridge import CatBridge
 from network.constants import CAT_PORT
 from network.ptt import PTTClient
 from network.server_monitor import ServerMonitor
+
+
+# Voice keyer timing
+VOICE_POLL_MS = 50    # how often the message pipeline is checked for its end
+VOICE_TAIL_MS = 300   # PTT stays on this long after the message has been sent
 
 
 class SessionManager(QObject):
@@ -25,6 +31,7 @@ class SessionManager(QObject):
     ptt_state_changed = pyqtSignal(bool)
     cat_state_changed = pyqtSignal(bool, str, str)  # ok, msg, port
     audio_error = pyqtSignal(str)  # why an audio pipeline stopped, "" = OK
+    voice_state = pyqtSignal(int)  # voice keyer message being sent, 0 = none
 
     def __init__(
         self,
@@ -57,6 +64,17 @@ class SessionManager(QObject):
         self._audio_timer.setInterval(1000)
         self._audio_timer.timeout.connect(self._check_audio)
 
+        # Voice keyer: the message pipeline is polled for its end, then PTT
+        # is held for VOICE_TAIL_MS so the server's jitter buffer drains
+        # (otherwise the last ~100 ms of the message would be cut off).
+        self._voice_slot: int = 0
+        self._voice_poll = QTimer(self)
+        self._voice_poll.setInterval(VOICE_POLL_MS)
+        self._voice_poll.timeout.connect(self._check_voice)
+        self._voice_tail = QTimer(self)
+        self._voice_tail.setSingleShot(True)
+        self._voice_tail.timeout.connect(self._end_voice)
+
     # ── Properties ──────────────────────────────────────────────────────────
 
     @property
@@ -88,7 +106,10 @@ class SessionManager(QObject):
             self.status_message.emit("Invalid IP address", "color:#ff4444;font-weight:bold;")
             return False
 
-        save_config({
+        # Update only these keys: other settings (e.g. voice keyer labels)
+        # live in the same file.
+        cfg = load_config()
+        cfg.update({
             "server_ip": ip,
             "input_device": input_device,
             "output_device": output_device,
@@ -96,6 +117,7 @@ class SessionManager(QObject):
             "cat_enabled": "true" if enable_cat else "false",
             "morse_enabled": "true" if morse_enabled else "false",
         })
+        save_config(cfg)
 
         self._ip = ip
         self._output_device = output_device
@@ -198,6 +220,7 @@ class SessionManager(QObject):
     # ── Disconnect ──────────────────────────────────────────────────────────
 
     def disconnect(self) -> None:
+        self._end_voice(resume_mic=False)
         self.connected = False
         self._audio_timer.stop()
         self._reset_audio_watch()
@@ -227,11 +250,16 @@ class SessionManager(QObject):
     def ptt_on(self) -> None:
         if not self.connected:
             return
+        # Manual PTT takes over from a message without unkeying the radio
+        self._end_voice(release_ptt=False)
         self._key(True)
         self.ptt_state_changed.emit(True)
 
     def ptt_off(self) -> None:
         if not self.connected:
+            return
+        if self._voice_slot:
+            self._end_voice()  # sends PTT off and brings the mic back
             return
         self._key(False)
         self.ptt_state_changed.emit(False)
@@ -258,12 +286,75 @@ class SessionManager(QObject):
     def on_footswitch(self, pressed: bool) -> None:
         if not self.connected:
             return
+        if self._voice_slot:
+            self._end_voice(release_ptt=not pressed)
         self._key(pressed)
         self.ptt_state_changed.emit(pressed)
+
+    # ── Voice keyer ─────────────────────────────────────────────────────────
+
+    @property
+    def voice_slot(self) -> int:
+        return self._voice_slot
+
+    def send_voice_message(self, slot: int) -> bool:
+        """Key up and send recorded message ``slot``; the same slot again
+        cancels it. Returns True if a message started."""
+        if not self.connected:
+            return False
+        if self._voice_slot:
+            same = self._voice_slot == slot
+            self._end_voice()
+            if same:
+                return False
+        path = message_path(slot)
+        if not path.exists():
+            self.status_message.emit(f"Message {slot} is not recorded", "color: orange;")
+            return False
+
+        self.tx.start_message(path)
+        self._voice_slot = slot
+        self.ptt.on(self._ip)
+        self.ptt_state_changed.emit(True)
+        self.voice_state.emit(slot)
+        self._voice_poll.start()
+        return True
+
+    def cancel_voice(self) -> None:
+        self._end_voice()
+
+    def _check_voice(self) -> None:
+        if not self._voice_slot or not self.tx.message_finished():
+            return
+        self._voice_poll.stop()
+        error = self.tx.failure()
+        if error:
+            print(f"[Voice] message {self._voice_slot} failed: {error}")
+            self.audio_error.emit(f"Voice message {self._voice_slot} failed: {error}")
+            self._end_voice()
+        else:
+            self._voice_tail.start(VOICE_TAIL_MS)
+
+    def _end_voice(self, resume_mic: bool = True, release_ptt: bool = True) -> None:
+        if not self._voice_slot:
+            return
+        self._voice_poll.stop()
+        self._voice_tail.stop()
+        self._voice_slot = 0
+        if release_ptt:
+            self.ptt.off(self._ip)
+            self.ptt_state_changed.emit(False)
+        if resume_mic:
+            try:
+                self.tx.resume_mic()
+            except FileNotFoundError:
+                self.status_message.emit("Error: gst-launch-1.0 not found", "color:#ff4444;font-weight:bold;")
+        self.voice_state.emit(0)
 
     # ── Cleanup ─────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
+        self._end_voice(resume_mic=False)
         self._audio_timer.stop()
         try:
             self.ptt.off(self._ip)

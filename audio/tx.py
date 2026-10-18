@@ -1,6 +1,7 @@
 import threading
 import time
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from audio.backend import (
     GstProcess,
@@ -9,6 +10,7 @@ from audio.backend import (
     set_source_output_mute,
     supports_mic_gating,
 )
+from audio.voice_keyer import wav_source_args
 from network.constants import AUDIO_PORT
 
 # How long to look for our capture stream in PulseAudio after starting
@@ -30,18 +32,21 @@ class AudioTX:
         self.gst: Optional[GstProcess] = None
         # Set when the stream could not be gated: the mic then stays open
         self.gating_warning: str = ""
+        # True while a voice keyer message is sent instead of the mic
+        self.sending_message: bool = False
+
+        self._ip: str = ""
+        self._device: str = ""
 
         self._mic_on: bool = False
         self._mic_cond = threading.Condition()
         self._gate_thread: Optional[threading.Thread] = None
         self._gate_stop: Optional[threading.Event] = None
 
-    def start(self, ip: str, device: str) -> None:
-        if self.gst:
-            return
-
-        args = [
-            *get_gst_src(device),
+    @staticmethod
+    def _sender_args(ip: str) -> List[str]:
+        """Raw audio → Opus/RTP → server (shared by the mic and messages)."""
+        return [
             "!",
             "audioconvert",
             "!",
@@ -60,6 +65,13 @@ class AudioTX:
             f"host={ip}",
             f"port={AUDIO_PORT}",
         ]
+
+    def start(self, ip: str, device: str) -> None:
+        if self.gst:
+            return
+
+        self._ip, self._device = ip, device
+        args = [*get_gst_src(device), *self._sender_args(ip)]
 
         self.gating_warning = ""
         with self._mic_cond:
@@ -80,11 +92,37 @@ class AudioTX:
             self._mic_on = on
             self._mic_cond.notify_all()
 
+    # ---------------- voice keyer ----------------
+
+    def start_message(self, path: Path) -> None:
+        """Send a recorded message instead of the mic until it ends.
+
+        The mic pipeline is replaced by one reading the file (udpsink
+        paces it in real time), so the server just sees TX audio.
+        """
+        self.stop()
+        self.sending_message = True
+        self.gst = GstProcess([*wav_source_args(path), *self._sender_args(self._ip)])
+
+    def message_finished(self) -> bool:
+        """The message pipeline has ended (completely or with an error)."""
+        return self.sending_message and (self.gst is None or self.gst.proc.poll() is not None)
+
+    def resume_mic(self) -> None:
+        """Back to the (muted) microphone after a message."""
+        self.stop()
+        self.start(self._ip, self._device)
+
     def failure(self) -> Optional[str]:
         """None while streaming (or stopped on purpose), else the error."""
-        return self.gst.failure() if self.gst else None
+        if not self.gst:
+            return None
+        if self.sending_message and self.gst.finished_ok:
+            return None  # a message reaching its end is not an error
+        return self.gst.failure()
 
     def stop(self) -> None:
+        self.sending_message = False
         if self._gate_stop:
             self._gate_stop.set()
             with self._mic_cond:
