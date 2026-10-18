@@ -1,6 +1,16 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.2.2 (2026-10-18)
+-------------------
+- Add: the microphone is muted while not transmitting (Linux). The server plays all
+  TX audio into the radio, so room noise reached it all the time and could key it
+  via VOX. Only the client's own PulseAudio capture stream is muted (other apps keep
+  the mic); PTT on (button or pedal) opens it within ~10-20 ms without delaying the
+  PTT packet. If the stream can't be found the mic stays open and a warning is shown
+- Fix: an empty input/output device no longer breaks the audio pipeline; the system
+  default device is used
+
 v1.2.1 (2026-10-17)
 -------------------
 - Fix: PTT keepalive could race with PTT release and send a '1' after the OFF packet,
