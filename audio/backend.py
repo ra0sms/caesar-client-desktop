@@ -163,15 +163,23 @@ def _device_arg(device: str) -> List[str]:
     return [f"device={device}"] if device else []
 
 
-def get_gst_src(device: str) -> List[str]:
-    """GStreamer audio source element + device arg for the current platform."""
+def get_gst_src(device: str, client_name: str = "") -> List[str]:
+    """GStreamer audio source element + device arg for the current platform.
+
+    ``client_name`` names the PulseAudio/PipeWire capture stream. The sound
+    server remembers a stream's mute state per application name and applies
+    it to the next stream with that name; without our own names, the TX
+    mic gating (which leaves its stream muted) would mute every later
+    gst-launch-1.0 capture stream on the system.
+    """
     if _is_windows():
         # WASAPI requires a system device GUID — use system default for now
         return ["wasapisrc"]
     elif _is_macos():
         return ["osxaudiosrc", *_device_arg(device)]
     else:
-        return ["pulsesrc", *_device_arg(device)]
+        name = [f"client-name={client_name}"] if client_name else []
+        return ["pulsesrc", *_device_arg(device), *name]
 
 
 def get_gst_sink(device: str) -> List[str]:

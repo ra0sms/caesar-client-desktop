@@ -11,6 +11,9 @@ from audio.backend import (
 )
 from network.constants import AUDIO_PORT
 
+# Name of our capture stream in PulseAudio/PipeWire (see get_gst_src)
+TX_CLIENT_NAME = "caesar-tx"
+
 # How long to look for our capture stream in PulseAudio after starting
 MIC_STREAM_LOOKUP_TIMEOUT = 3.0
 MIC_STREAM_LOOKUP_INTERVAL = 0.05
@@ -41,7 +44,7 @@ class AudioTX:
             return
 
         args = [
-            *get_gst_src(device),
+            *get_gst_src(device, TX_CLIENT_NAME),
             "!",
             "audioconvert",
             "!",

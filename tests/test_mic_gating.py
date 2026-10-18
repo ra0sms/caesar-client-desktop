@@ -40,6 +40,19 @@ class FindSourceOutputTest(unittest.TestCase):
             self.assertIsNone(backend.find_source_output(3333))
 
 
+class StreamNameTest(unittest.TestCase):
+    def test_tx_stream_has_its_own_name_on_linux(self) -> None:
+        # The sound server restores mute per application name: the gated TX
+        # stream must not share "gst-launch-1.0" with other capture streams.
+        with mock.patch.object(backend, "_is_windows", lambda: False), \
+                mock.patch.object(backend, "_is_macos", lambda: False):
+            self.assertEqual(
+                backend.get_gst_src("mic", tx_module.TX_CLIENT_NAME),
+                ["pulsesrc", "device=mic", "client-name=caesar-tx"],
+            )
+            self.assertEqual(backend.get_gst_src(""), ["pulsesrc"])
+
+
 class FakeGst:
     def __init__(self) -> None:
         self.proc = mock.Mock(pid=2222)
