@@ -1,6 +1,17 @@
 CAESAR Desktop - Changelog
 ==========================
 
+v1.2.4 (2026-10-24)
+-------------------
+- Add: voice keyer has six message slots (F1-F6) in a compact 2 x 3 grid: name, send,
+  small Listen (▶) and Record (●) buttons and the message length
+- Add: recording over an existing message asks for confirmation
+- Add: Folder button opens the message folder (~/.caesar-desktop/voice); slots are
+  re-read when the window becomes active, so WAV files dropped there appear at once.
+  README describes the folder and which WAV files can be used
+- Fix: GStreamer errors shown in the window could be a library info line such as
+  "libva info: VA-API version ..." instead of the actual error
+
 v1.2.3 (2026-10-19)
 -------------------
 - Add: voice keyer (Linux) — three message slots with a name, Rec, Listen and Send.
