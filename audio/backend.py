@@ -90,16 +90,25 @@ _GST_ELEMENT_PATH = re.compile(r"/GstPipeline:\w+(?:/Gst\w+:\w+)*/Gst\w+:(\w+)")
 STDERR_TAIL_LINES = 20
 
 
+# Informational lines libraries print to stderr, e.g. "libva info: VA-API
+# version 1.23.0" when GStreamer rescans its plugins
+_LIBRARY_INFO = re.compile(r"^[\w.-]+ info:", re.IGNORECASE)
+
+
 def summarize_gst_error(lines: List[str], returncode: int) -> str:
     """One-line description of why gst-launch exited, for the UI.
 
     gst-launch prints the error first and debug details after it (in the
-    user's locale), so the first line is the one worth showing.
+    user's locale). Prefer the line naming the failing element, skip
+    libraries' informational lines, otherwise take the first line.
     """
-    for line in lines:
-        if line.strip():
-            return _GST_ELEMENT_PATH.sub(r"\1", line.strip())
-    return f"gst-launch-1.0 exited with code {returncode}"
+    lines = [line.strip() for line in lines if line.strip()]
+    chosen = next((line for line in lines if _GST_ELEMENT_PATH.search(line)), None)
+    if chosen is None:
+        chosen = next((line for line in lines if not _LIBRARY_INFO.match(line)), None)
+    if chosen is None:
+        return f"gst-launch-1.0 exited with code {returncode}"
+    return _GST_ELEMENT_PATH.sub(r"\1", chosen)
 
 
 class GstProcess:

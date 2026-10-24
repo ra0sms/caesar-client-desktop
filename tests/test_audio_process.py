@@ -19,6 +19,17 @@ class SummarizeTest(unittest.TestCase):
             "ERROR: from element udpsrc0: Could not get/set settings from/on resource.",
         )
 
+    def test_library_info_lines_are_skipped(self) -> None:
+        lines = [
+            "libva info: VA-API version 1.23.0",
+            "ERROR: from element /GstPipeline:pipeline0/GstUDPSrc:udpsrc0: Could not get/set settings.",
+        ]
+        self.assertEqual(summarize_gst_error(lines, 1), "ERROR: from element udpsrc0: Could not get/set settings.")
+        self.assertEqual(
+            summarize_gst_error(["libva info: VA-API version 1.23.0", "WARNING: erroneous pipeline: no element \"x\""], 1),
+            'WARNING: erroneous pipeline: no element "x"',
+        )
+
     def test_no_output(self) -> None:
         self.assertEqual(summarize_gst_error([], 255), "gst-launch-1.0 exited with code 255")
 

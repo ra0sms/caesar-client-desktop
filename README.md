@@ -29,8 +29,8 @@ This client connects to the **NANO Server** — a hardware/software device based
   [DeepCW](https://github.com/e04/web-deep-cw-decoder) neural model
   (`morse/deepcw/`, run with `onnxruntime`), which is licensed under
   AGPL-3.0 — see `morse/deepcw/README.md`
-- Voice keyer (Linux): record three messages (CQ, call, …) and send them with
-  PTT by F1–F3; Esc or PTT stops a message
+- Voice keyer (Linux): record six messages (CQ, call, …) and send them with
+  PTT by F1–F6; Esc or PTT stops a message
 - Cross-platform: **Linux** and **Windows**
 
 ---
@@ -171,13 +171,13 @@ To use this device for WSJT, set the `audio_output` in your config to `WSJT_SINK
 
 ## Voice Keyer
 
-The three voice keyer messages are stored as WAV files:
+The six voice keyer messages are stored as WAV files
+`~/.caesar-desktop/voice/msg1.wav` … `msg6.wav`; slot N is sent with key FN
+(F1–F6). The **Folder** button opens this folder.
 
-| Slot | Key | File (Linux) |
-|---|---|---|
-| 1 | F1 | `~/.caesar-desktop/voice/msg1.wav` |
-| 2 | F2 | `~/.caesar-desktop/voice/msg2.wav` |
-| 3 | F3 | `~/.caesar-desktop/voice/msg3.wav` |
+Each slot has a name, the send button (FN), ▶ to listen to the message
+locally (not on the air) and ● to record it. Recording over an existing
+message asks for confirmation.
 
 Recordings made in the client are **WAV, PCM 16-bit, 48 kHz, mono**.
 
@@ -197,10 +197,10 @@ ffmpeg -i cq.mp3 -ac 1 -ar 48000 -c:a pcm_s16le ~/.caesar-desktop/voice/msg1.wav
 sox cq.mp3 -r 48000 -c 1 -b 16 ~/.caesar-desktop/voice/msg1.wav
 ```
 
-The client checks the files when it starts and on Connect / Disconnect, so a
-file added while the client is running appears after the next Connect.
-Message names (CQ, Call, 73) are stored in `config.json` as `voice_label_1`
-… `voice_label_3`.
+The client checks the folder whenever its window becomes active, so a file
+dropped there shows up as soon as you switch back to the client.
+Message names are stored in `config.json` as `voice_label_1` …
+`voice_label_6`.
 
 ---
 

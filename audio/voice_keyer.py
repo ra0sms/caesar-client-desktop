@@ -8,6 +8,8 @@ records them from the microphone and plays them to the local output
 
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 import wave
@@ -17,6 +19,7 @@ from typing import List, Optional
 from audio.backend import (
     GstProcess,
     find_source_output,
+    get_gst_env,
     get_gst_sink,
     get_gst_src,
     set_source_output_mute,
@@ -25,7 +28,7 @@ from audio.backend import (
 from config import CONFIG_DIR
 
 VOICE_DIR: Path = CONFIG_DIR / "voice"
-MESSAGE_COUNT = 3
+MESSAGE_COUNT = 6
 MAX_RECORD_SECONDS = 30
 MIN_RECORD_SECONDS = 0.3
 
@@ -66,6 +69,24 @@ def message_duration(slot: int) -> Optional[float]:
     except (OSError, EOFError, wave.Error):
         return None
     return frames / rate if rate and frames else None
+
+
+def open_voice_dir() -> bool:
+    """Show the message folder in the system file manager."""
+    try:
+        VOICE_DIR.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(str(VOICE_DIR))  # type: ignore[attr-defined]
+            return True
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        # Without the AppImage's LD_LIBRARY_PATH (see get_gst_env): the
+        # file manager must use the system's own libraries.
+        subprocess.Popen([opener, str(VOICE_DIR)], env=get_gst_env(),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError as e:
+        print(f"[Voice] could not open {VOICE_DIR}: {e}")
+        return False
 
 
 def gst_location(path: Path) -> str:

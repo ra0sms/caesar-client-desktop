@@ -2,7 +2,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -11,8 +11,10 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QShortcut,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,9 +30,12 @@ from audio.backend import (
 from audio.voice_keyer import (
     MAX_RECORD_SECONDS,
     MESSAGE_COUNT,
+    VOICE_DIR,
     VoicePlayer,
     VoiceRecorder,
     message_duration,
+    message_path,
+    open_voice_dir,
 )
 from config import load_config, save_config
 from gui.marquee import MarqueeLabel
@@ -154,23 +159,34 @@ class MainWindow(QWidget):
         self._voice_record_started = 0.0
         self._voice_errors = {}  # slot -> last record/send error
 
+        # MESSAGE_COUNT compact cells, two per row:
+        #   [name] [F1 send] [▶ listen] [● rec] [duration]
         self.voice_grid = QGridLayout()
+        self.voice_grid.setHorizontalSpacing(12)
         self.voice_rows = {}
         for slot in range(1, MESSAGE_COUNT + 1):
             name = QLineEdit(cfg.get(f"voice_label_{slot}", ""))
-            name.setPlaceholderText(f"Message {slot}")
-            name.setMaximumWidth(160)
+            name.setPlaceholderText(f"Msg {slot}")
+            name.setMaximumWidth(110)
             name.editingFinished.connect(lambda s=slot: self.voice_label_changed(s))
-            rec = QPushButton("● Rec")
-            rec.clicked.connect(lambda _=False, s=slot: self.voice_record_clicked(s))
-            listen = QPushButton("▶ Listen")
-            listen.clicked.connect(lambda _=False, s=slot: self.voice_listen_clicked(s))
             send = QPushButton()
+            send.setMinimumWidth(56)
+            send.setToolTip(f"Send message {slot} on the air (F{slot}); again or Esc to stop")
             send.clicked.connect(lambda _=False, s=slot: self.voice_send_clicked(s))
+            listen = QToolButton()
+            listen.setFixedWidth(28)
+            listen.clicked.connect(lambda _=False, s=slot: self.voice_listen_clicked(s))
+            rec = QToolButton()
+            rec.setFixedWidth(28)
+            rec.clicked.connect(lambda _=False, s=slot: self.voice_record_clicked(s))
             info = QLabel()
-            info.setMinimumWidth(90)
-            for col, widget in enumerate((name, rec, listen, send, info)):
-                self.voice_grid.addWidget(widget, slot - 1, col)
+            info.setFixedWidth(44)
+
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            for widget in (name, send, listen, rec, info):
+                cell.addWidget(widget)
+            self.voice_grid.addLayout(cell, (slot - 1) // 2, (slot - 1) % 2)
             self.voice_rows[slot] = {"name": name, "rec": rec, "listen": listen, "send": send, "info": info}
 
             QShortcut(QKeySequence(f"F{slot}"), self, activated=lambda s=slot: self.voice_send_clicked(s))
@@ -238,7 +254,14 @@ class MainWindow(QWidget):
         layout.addWidget(self.ptt_btn)
 
         # Voice keyer
-        layout.addWidget(QLabel("Voice Keyer (F1-F3 send, Esc stop)"))
+        voice_header = QHBoxLayout()
+        voice_header.addWidget(QLabel(f"Voice Keyer (F1-F{MESSAGE_COUNT} send, Esc stop)"))
+        voice_header.addStretch()
+        self.voice_folder_btn = QPushButton("Folder")
+        self.voice_folder_btn.setToolTip(f"Open the message folder: {VOICE_DIR}")
+        self.voice_folder_btn.clicked.connect(self.voice_open_folder)
+        voice_header.addWidget(self.voice_folder_btn)
+        layout.addLayout(voice_header)
         layout.addLayout(self.voice_grid)
 
         # CAT UI
@@ -543,6 +566,8 @@ class MainWindow(QWidget):
             return
         if self.session.voice_slot:
             return  # don't record while a message is on the air
+        if not self._voice_confirm_overwrite(slot):
+            return
         self.voice_player.stop()
         self._voice_errors.pop(slot, None)
         try:
@@ -552,6 +577,33 @@ class MainWindow(QWidget):
         self._voice_record_started = time.monotonic()
         self._voice_timer.start()
         self._voice_refresh()
+
+    def _voice_confirm_overwrite(self, slot: int) -> bool:
+        """Ask before recording over an existing message."""
+        duration = message_duration(slot)
+        if duration is None:
+            return True
+        name = self.voice_rows[slot]["name"].text().strip() or f"Msg {slot}"
+        answer = QMessageBox.question(
+            self,
+            "Record message",
+            f"Message {slot} \"{name}\" ({duration:.1f} s) will be replaced "
+            "by a new recording.\n\nRecord over it?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def voice_open_folder(self) -> None:
+        if not open_voice_dir():
+            self.status.setText(f"Could not open {VOICE_DIR}")
+            self.status.setStyleSheet("color:#ff4444;")
+
+    def changeEvent(self, a0) -> None:
+        # Files may have been added to the message folder meanwhile
+        if a0 and a0.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._voice_refresh()
+        super().changeEvent(a0)
 
     def _voice_finish_recording(self) -> None:
         slot = self.voice_recorder.slot
@@ -593,7 +645,8 @@ class MainWindow(QWidget):
                 self._voice_finish_recording()
             else:
                 info = self.voice_rows[self.voice_recorder.slot]["info"]
-                info.setText(f"● {int(elapsed)} / {MAX_RECORD_SECONDS} s")
+                info.setText(f"●{int(elapsed)}s")
+                info.setToolTip(f"Recording, stops at {MAX_RECORD_SECONDS} s")
                 return
         if self.voice_player.slot and not self.voice_player.playing:
             self.voice_player.stop()
@@ -611,14 +664,16 @@ class MainWindow(QWidget):
             duration = message_duration(slot)
             busy = bool(recording or sending)
 
-            row["rec"].setText("■ Stop" if recording == slot else "● Rec")
+            row["rec"].setText("■" if recording == slot else "●")
+            row["rec"].setToolTip("Stop recording" if recording == slot else f"Record message {slot}")
             row["rec"].setEnabled(not busy or recording == slot)
-            row["rec"].setStyleSheet("color:#ff4444;font-weight:bold;" if recording == slot else "")
+            row["rec"].setStyleSheet("color:#ff4444;font-weight:bold;" if recording == slot else "color:#cc3333;")
 
-            row["listen"].setText("■ Stop" if listening == slot else "▶ Listen")
+            row["listen"].setText("■" if listening == slot else "▶")
+            row["listen"].setToolTip("Stop" if listening == slot else "Listen (local output, not on the air)")
             row["listen"].setEnabled(duration is not None and not recording)
 
-            row["send"].setText("■ Stop" if sending == slot else f"F{slot} Send")
+            row["send"].setText(f"■ F{slot}" if sending == slot else f"F{slot}")
             row["send"].setEnabled(connected and duration is not None and not recording)
             row["send"].setStyleSheet(
                 "QPushButton { background-color:#cc0000; color:white; font-weight:bold; }"
@@ -634,12 +689,12 @@ class MainWindow(QWidget):
                 info.setToolTip(error)
                 info.setStyleSheet("color:#ff4444;")
             elif duration is not None:
-                info.setText(f"{duration:.1f} s")
-                info.setToolTip("")
+                info.setText(f"{duration:.1f}s")
+                info.setToolTip(str(message_path(slot)))
                 info.setStyleSheet("color:#00aa55;")
             else:
-                info.setText("not recorded")
-                info.setToolTip("")
+                info.setText("—")
+                info.setToolTip("Not recorded")
                 info.setStyleSheet("color: gray;")
 
     # =====================================================

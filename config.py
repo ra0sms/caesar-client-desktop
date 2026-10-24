@@ -19,6 +19,9 @@ DEFAULT_CONFIG: Dict[str, str] = {
     "voice_label_1": "CQ",
     "voice_label_2": "Call",
     "voice_label_3": "73",
+    "voice_label_4": "",
+    "voice_label_5": "",
+    "voice_label_6": "",
 }
 
 
